@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#f5f6f8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self' ws://127.0.0.1:* ws://localhost:*; object-src 'none'; base-uri 'none'; form-action 'none'"
+    />
+    <title>mihomo-codex · 隔离主题预览</title>
+    <style>
+      #fixture-banner {
+        position: relative;
+        z-index: 20000;
+        display: flex;
+        align-items: center;
+        flex-wrap: wrap;
+        gap: 8px 14px;
+        min-height: 74px;
+        padding: 10px 16px;
+        color: #172033;
+        background: #eef4ff;
+        border-bottom: 2px solid #93b3e6;
+        font: 12px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      }
+      #fixture-banner strong { display: block; }
+      #fixture-banner button {
+        padding: 6px 10px;
+        border: 1px solid #7790b5;
+        border-radius: 6px;
+        color: #172033;
+        background: #fff;
+        cursor: pointer;
+        font: inherit;
+      }
+      #fixture-banner button[aria-pressed="true"] { background: #d4e3ff; }
+      #fixture-banner button:focus-visible { outline: 3px solid #174cbd; outline-offset: 2px; }
+      #fixture-banner .fixture-status { display: flex; flex-wrap: wrap; gap: 4px 12px; }
+      #fixture-banner output { font-variant-numeric: tabular-nums; }
+      #fixture-banner [data-failed="true"] { color: #a21c30; font-weight: 700; }
+      html body #app { min-height: 0; height: calc(100vh - var(--fixture-banner-height, 74px)); }
+      html body #app .app-shell { height: 100%; }
+    </style>
+  </head>
+  <body>
+    <aside id="fixture-banner" aria-label="隔离测试控制台">
+      <div>
+        <strong>仅合成数据 · 真实应用界面</strong>
+        <span>未启动内核；未读取订阅、用户设置或系统网络。</span>
+      </div>
+      <div role="group" aria-label="模拟系统外观">
+        <button id="fixture-system-light" type="button">模拟系统浅色</button>
+        <button id="fixture-system-dark" type="button">模拟系统深色</button>
+      </div>
+      <button id="fixture-fail-save" type="button" aria-pressed="false">下次主题保存失败</button>
+      <button id="fixture-reload" type="button">重载检查持久化</button>
+      <button id="fixture-reset" type="button">重置测试数据</button>
+      <div class="fixture-status" aria-live="polite">
+        <span>保存主题：<output id="fixture-saved-theme">system</output></span>
+        <span>模拟系统：<output id="fixture-system-appearance">light</output></span>
+        <span>主题保存调用：<output id="fixture-theme-save-count">0</output></span>
+        <span>网络变更调用：<output id="fixture-network-mutation-count">0</output></span>
+        <span>已拦截浏览器请求：<output id="fixture-browser-request-count">0</output></span>
+        <span>运行时错误：<output id="fixture-runtime-error-count">0</output></span>
+        <span id="fixture-status">正在加载隔离预览</span>
+      </div>
+    </aside>
+    <div id="app"></div>
+    <script type="module" src="./theme-preview.ts"></script>
+  </body>
+</html>

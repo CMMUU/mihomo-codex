@@ -1,3 +1,5 @@
+import type { ThemePreference } from "./theme";
+
 export type NetworkMode = "manual" | "system_proxy" | "tun";
 export type RoutingMode = "rule" | "global" | "direct";
 
@@ -47,7 +49,7 @@ export type OpenAiPolicyTask = {
 export type AppSettings = {
   schemaVersion: number;
   locale: string;
-  theme: string;
+  theme: ThemePreference;
   launchAtLogin: boolean;
   showGlobalTraffic: boolean;
   networkMode: NetworkMode;

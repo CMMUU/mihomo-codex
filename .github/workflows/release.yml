@@ -71,6 +71,7 @@ jobs:
       - run: npm ci
       - run: npm run test:branding
       - run: npm run test:licenses
+      - run: npm run test:theme
       - run: npm run core:prepare
       - run: npm run tauri build
       - uses: actions/upload-artifact@v4

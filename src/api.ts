@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import type { ThemePreference } from "./theme";
 import type {
   AppInfo,
   AppSettings,
@@ -27,6 +28,8 @@ export const api = {
   settings: () => invoke<AppSettings>("get_settings"),
   updateSettings: (settings: AppSettings) =>
     invoke<AppSettings>("update_settings", { settings }),
+  setTheme: (theme: ThemePreference) =>
+    invoke<AppSettings>("set_app_theme", { theme }),
   globalTraffic: () =>
     invoke<GlobalTrafficSnapshot>("global_traffic_snapshot"),
   inspect: (source: string) =>

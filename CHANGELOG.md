@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased (0.3.2)
+
+- Add immediately saved appearance choices: neutral Light, neutral Dark, Deep Purple, and System (Light/Dark only).
+- Repair the historical light/dark CSS overrides and synchronize the native application appearance with the saved preference.
+- Add a theme-only settings command that preserves proxy ports, subscriptions, autostart preferences and controller credentials.
+- Restore the previous appearance when persistence fails and prevent concurrent theme writes.
+- Add theme state-machine tests, backend persistence tests, and an isolated browser preview fixture for visual regression checks without proxy takeover.
+
 ## 0.3.1 - 2026-09-03
 
 Includes the previously unreleased changes from 2026-08-23 and the following rename:

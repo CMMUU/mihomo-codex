@@ -1,3 +1,4 @@
+mod appearance;
 mod config;
 mod diagnostics;
 mod effective;
@@ -95,6 +96,15 @@ fn get_settings(app: AppHandle) -> Result<PublicAppSettings, AppErrorDto> {
 }
 
 #[tauri::command]
+fn set_app_theme(app: AppHandle, theme: String) -> Result<PublicAppSettings, AppErrorDto> {
+    appearance::native_theme(&theme).map_err(dto)?;
+    let storage = AppStorage::from_app(&app).map_err(dto)?;
+    let settings = appearance::persist_theme(&storage, &theme).map_err(dto)?;
+    appearance::apply_native_theme(&app, &settings.theme).map_err(dto)?;
+    Ok(PublicAppSettings::from(&settings))
+}
+
+#[tauri::command]
 fn update_settings(
     app: AppHandle,
     state: State<'_, MihomoRuntime>,
@@ -129,9 +139,7 @@ fn update_settings(
             "代理端口和控制端口必须在 1024 到 65535 范围".to_string(),
         )));
     }
-    if !matches!(settings.theme.as_str(), "system" | "dark" | "light") {
-        return Err(dto(AppError::InvalidInput("无效主题".to_string())));
-    }
+    appearance::native_theme(&settings.theme).map_err(dto)?;
     if !(1..=90).contains(&settings.diagnostics_retention_days) {
         return Err(dto(AppError::InvalidInput(
             "日志保留天数必须在 1 到 90 之间".to_string(),
@@ -149,6 +157,7 @@ fn update_settings(
             .map_err(|error| dto(AppError::Platform(error.to_string())))?;
     }
     storage.save_settings(&settings).map_err(dto)?;
+    appearance::apply_native_theme(&app, &settings.theme).map_err(dto)?;
     traffic.set_enabled(&app, settings.show_global_traffic);
     Ok(PublicAppSettings::from(&settings))
 }
@@ -686,6 +695,9 @@ pub fn run() {
         .setup(|app| {
             let storage = AppStorage::from_app(app.handle()).map_err(|error| error.to_string())?;
             let settings = storage.settings().map_err(|error| error.to_string())?;
+            // Unknown legacy values should not prevent startup. Leave the stored
+            // value untouched and use the system appearance until it is changed.
+            app.set_theme(appearance::native_theme(&settings.theme).unwrap_or(None));
             let persistent = storage.state().map_err(|error| error.to_string())?;
             if !persistent.clean_shutdown {
                 let _ = platform::restore_system_proxy(app.handle());
@@ -747,6 +759,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             app_info,
             get_settings,
+            set_app_theme,
             update_settings,
             global_traffic_snapshot,
             inspect_mihomo_yaml,

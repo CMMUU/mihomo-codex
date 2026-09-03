@@ -1,6 +1,13 @@
 import "./styles.css";
 import { api, errorMessage, revisionLabel } from "./api";
 import { listen } from "@tauri-apps/api/event";
+import {
+  THEME_OPTIONS,
+  ThemeController,
+  isThemePreference,
+  themeColorScheme,
+} from "./theme";
+import type { ThemePreference, ThemeSnapshot } from "./theme";
 import type {
   AppInfo,
   AppSettings,
@@ -104,6 +111,8 @@ let subscriptionImporting = false;
 let openAiTaskFinishedAt: string | null = null;
 let networkModeSwitching = false;
 let runtimeActionInFlight = false;
+let settingsSaving = false;
+let appearanceFeedback = "";
 const OPENAI_GROUP_NAME = "🤖 OpenAI 自动灾备";
 document.documentElement.dataset.view = store.view;
 
@@ -368,13 +377,28 @@ app.innerHTML = `
       </section>
 
       <section class="view-stack is-hidden" id="settings-view">
+        <article class="panel appearance-panel">
+          <div class="panel-heading"><div><div class="section-label">APPEARANCE</div><h2>外观主题</h2></div></div>
+          <fieldset class="appearance-settings">
+            <legend>选择外观，立即生效并自动保存</legend>
+            <div class="appearance-grid" role="radiogroup" aria-label="应用主题" aria-describedby="appearance-status">
+              ${THEME_OPTIONS.map((option) => `
+                <button type="button" class="theme-option" data-theme-choice="${option.id}" role="radio" aria-checked="false" tabindex="-1">
+                  <span class="theme-swatch" data-swatch="${option.id}" aria-hidden="true"><i></i><i></i><i></i></span>
+                  <span class="theme-copy"><strong>${option.label}</strong><small>${option.description}</small></span>
+                  <span class="theme-checkmark" aria-hidden="true">✓</span>
+                </button>
+              `).join("")}
+            </div>
+            <p class="appearance-status" id="appearance-status" role="status" aria-live="polite"></p>
+          </fieldset>
+        </article>
         <article class="panel">
           <div class="panel-heading"><div><div class="section-label">SETTINGS</div><h2>运行设置</h2></div></div>
           <form id="settings-form" class="settings-grid">
             <label><span>网络模式</span><select id="settings-mode"><option value="manual">Manual 本地端口</option><option value="system_proxy">System Proxy 系统代理</option><option value="tun">TUN 全局接管</option></select></label>
             <label><span>Mixed Port</span><input id="settings-mixed-port" type="number" min="1024" max="65535" /></label>
             <label><span>Controller Port</span><input id="settings-controller-port" type="number" min="1024" max="65535" /></label>
-            <label><span>主题</span><select id="settings-theme"><option value="system">跟随系统</option><option value="dark">深色</option><option value="light">浅色</option></select></label>
             <label class="checkbox-row"><input id="settings-launch" type="checkbox" /><span>登录时启动</span></label>
             <label class="checkbox-row"><input id="settings-global-traffic" type="checkbox" /><span>显示全局流量监控</span></label>
             <label><span>日志保留天数</span><input id="settings-retention" type="number" min="1" max="90" /></label>
@@ -616,6 +640,7 @@ function phaseLabel(phase: string | undefined): string {
 }
 
 async function refreshBase() {
+  const requestedThemeRevision = themeController.mutationRevision;
   const result = await action("", async () => {
     const [
       appInfo,
@@ -643,6 +668,9 @@ async function refreshBase() {
         api.openAiPolicyTask(),
         api.globalTraffic(),
       ]);
+    if (!themeController.sync(settings.theme, requestedThemeRevision)) {
+      settings.theme = themeController.snapshot.preference;
+    }
     Object.assign(store, {
       appInfo,
       settings,
@@ -928,11 +956,10 @@ function renderProfileDetails() {
 
 function renderSettings() {
   if (!store.settings) return;
-  applyTheme(store.settings.theme);
+  themeController.sync(store.settings.theme);
   ($("#settings-mode") as HTMLSelectElement).value = store.settings.networkMode;
   ($("#settings-mixed-port") as HTMLInputElement).value = String(store.settings.mixedPort);
   ($("#settings-controller-port") as HTMLInputElement).value = String(store.settings.controllerPort);
-  ($("#settings-theme") as HTMLSelectElement).value = store.settings.theme;
   ($("#settings-launch") as HTMLInputElement).checked = store.settings.launchAtLogin;
   ($("#settings-global-traffic") as HTMLInputElement).checked =
     store.settings.showGlobalTraffic;
@@ -996,10 +1023,85 @@ function renderTunHelper() {
   uninstall.disabled = networkModeSwitching || running;
 }
 
-function applyTheme(theme: string) {
-  const resolved = theme === "system" ? "light" : theme;
-  document.documentElement.dataset.theme = resolved;
+const systemAppearance = window.matchMedia("(prefers-color-scheme: dark)");
+const themeController = new ThemeController({
+  systemDark: () => systemAppearance.matches,
+  persist: async (theme) => {
+    const settings = await api.setTheme(theme);
+    if (!isThemePreference(settings.theme)) throw new Error("保存主题返回了无效设置");
+    // A theme response must not overwrite unrelated settings updated meanwhile.
+    store.settings = store.settings ? { ...store.settings, theme: settings.theme } : settings;
+    return settings.theme;
+  },
+  render: renderAppearance,
+});
+
+function renderAppearance(snapshot: ThemeSnapshot) {
+  const root = document.documentElement;
+  root.dataset.theme = snapshot.resolved;
+  root.dataset.themePreference = snapshot.selected;
+  root.style.colorScheme = themeColorScheme(snapshot.resolved);
+  const meta = document.querySelector<HTMLMetaElement>('meta[name="theme-color"]');
+  if (meta) meta.content = { light: "#f5f6f8", dark: "#15171c", purple: "#160c25" }[snapshot.resolved];
+  const busy = snapshot.saving || settingsSaving;
+  document.querySelectorAll<HTMLButtonElement>("[data-theme-choice]").forEach((button) => {
+    const selected = button.dataset.themeChoice === snapshot.selected;
+    button.setAttribute("aria-checked", String(selected));
+    button.tabIndex = selected ? 0 : -1;
+    // Keep focus on a radio while a write is pending; event handlers reject re-entry.
+    button.disabled = !store.settings;
+    button.setAttribute("aria-disabled", String(busy || !store.settings));
+  });
+  $(".appearance-grid")!.setAttribute("aria-busy", String(snapshot.saving));
+  const submit = document.querySelector<HTMLButtonElement>('#settings-form button[type="submit"]');
+  if (submit) submit.disabled = busy;
+  $("#appearance-status")!.textContent = snapshot.saving
+    ? "正在保存外观…"
+    : appearanceFeedback || (snapshot.selected === "system"
+      ? `正在跟随系统 · 当前为${snapshot.resolved === "dark" ? "深色" : "浅色"}`
+      : `${THEME_OPTIONS.find((option) => option.id === snapshot.selected)!.label}主题 · 自动保存，不影响代理状态`);
 }
+
+async function selectTheme(preference: ThemePreference) {
+  if (!store.settings || settingsSaving || themeController.snapshot.saving) return;
+  appearanceFeedback = "";
+  try {
+    await themeController.select(preference);
+    themeController.refresh();
+  } catch (error) {
+    appearanceFeedback = "保存失败，已恢复此前外观，请重试。";
+    toast(errorMessage(error), "error");
+    themeController.refresh();
+  }
+}
+
+systemAppearance.addEventListener("change", () => {
+  appearanceFeedback = "";
+  themeController.refresh();
+});
+
+document.querySelectorAll<HTMLButtonElement>("[data-theme-choice]").forEach((button) => {
+  button.addEventListener("click", () => {
+    const preference = button.dataset.themeChoice;
+    if (isThemePreference(preference)) void selectTheme(preference);
+  });
+  button.addEventListener("keydown", (event) => {
+    const buttons = [...document.querySelectorAll<HTMLButtonElement>("[data-theme-choice]")];
+    const current = buttons.indexOf(button);
+    let next: number;
+    if (event.key === "ArrowRight" || event.key === "ArrowDown") next = (current + 1) % buttons.length;
+    else if (event.key === "ArrowLeft" || event.key === "ArrowUp") next = (current + buttons.length - 1) % buttons.length;
+    else if (event.key === "Home") next = 0;
+    else if (event.key === "End") next = buttons.length - 1;
+    else return;
+    event.preventDefault();
+    if (settingsSaving || themeController.snapshot.saving || buttons[next].disabled) return;
+    buttons[next].focus();
+    const preference = buttons[next].dataset.themeChoice;
+    if (isThemePreference(preference)) void selectTheme(preference);
+  });
+});
+themeController.refresh();
 
 async function refreshRuntimeOnly() {
   const [runtime, systemProxy] = await Promise.all([api.runtime(), api.systemProxy()]);
@@ -2148,34 +2250,41 @@ $("#tun-helper-uninstall")!.addEventListener("click", async (event) => {
 
 $("#settings-form")!.addEventListener("submit", async (event) => {
   event.preventDefault();
-  if (!store.settings) return;
+  if (!store.settings || settingsSaving || themeController.snapshot.saving) return;
   const mode = ($("#settings-mode") as HTMLSelectElement).value as NetworkMode;
   const settings: AppSettings = {
     ...store.settings,
     networkMode: mode,
     mixedPort: Number(($("#settings-mixed-port") as HTMLInputElement).value),
     controllerPort: Number(($("#settings-controller-port") as HTMLInputElement).value),
-    theme: ($("#settings-theme") as HTMLSelectElement).value,
+    theme: themeController.snapshot.preference,
     launchAtLogin: ($("#settings-launch") as HTMLInputElement).checked,
     showGlobalTraffic: ($("#settings-global-traffic") as HTMLInputElement).checked,
     diagnosticsRetentionDays: Number(
       ($("#settings-retention") as HTMLInputElement).value,
     ),
   };
-  if (mode === "tun" && mode !== store.settings.networkMode) {
-    if (!(await ensureTunHelperReady())) return;
-  }
-  const updated = await action("设置已保存", async () => {
-    if (mode !== store.settings!.networkMode) {
-      await api.setNetworkMode(mode);
+  settingsSaving = true;
+  themeController.refresh();
+  try {
+    if (mode === "tun" && mode !== store.settings.networkMode) {
+      if (!(await ensureTunHelperReady())) return;
     }
-    return api.updateSettings(settings);
-  });
-  if (updated) {
-    store.settings = updated;
-    renderSettings();
-    renderOverview();
-    renderGlobalTraffic();
+    const updated = await action("设置已保存", async () => {
+      if (mode !== store.settings!.networkMode) {
+        await api.setNetworkMode(mode);
+      }
+      return api.updateSettings(settings);
+    });
+    if (updated) {
+      store.settings = updated;
+      renderSettings();
+      renderOverview();
+      renderGlobalTraffic();
+    }
+  } finally {
+    settingsSaving = false;
+    themeController.refresh();
   }
 });
 
