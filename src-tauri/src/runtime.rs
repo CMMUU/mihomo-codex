@@ -640,6 +640,8 @@ pub(crate) fn write_private_file(path: &Path, bytes: &[u8]) -> AppResult<()> {
 }
 
 fn set_private_file_permissions(path: &Path) -> AppResult<()> {
+    #[cfg(not(unix))]
+    let _ = path;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -649,6 +651,8 @@ fn set_private_file_permissions(path: &Path) -> AppResult<()> {
 }
 
 pub(crate) fn set_private_directory_permissions(path: &Path) -> AppResult<()> {
+    #[cfg(not(unix))]
+    let _ = path;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;

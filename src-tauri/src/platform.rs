@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 use std::process::Command;
 use tauri::{AppHandle, Manager};
 
@@ -592,6 +593,7 @@ fn windows_refresh_proxy() -> AppResult<()> {
     Ok(())
 }
 
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 fn run_command(program: &str, args: &[&str]) -> AppResult<String> {
     let output = Command::new(program)
         .args(args)
