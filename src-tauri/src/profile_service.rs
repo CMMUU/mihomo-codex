@@ -5,9 +5,9 @@ use crate::models::{
     ConfigRevision, ProfileRecord, ProfileSource, PublicProfileRecord, RoutingMode,
     SubscriptionMetadata, ValidationReport,
 };
-use crate::runtime;
 use crate::storage::AppStorage;
 use crate::subscription::SubscriptionFetcher;
+use crate::user_rules;
 use chrono::Utc;
 use serde::Serialize;
 use tauri::AppHandle;
@@ -98,7 +98,7 @@ pub fn profile_details(app: &AppHandle, profile_id: Uuid) -> AppResult<ProfileDe
     })
 }
 
-pub fn create_inline_profile(
+pub async fn create_inline_profile(
     app: &AppHandle,
     display_name: String,
     source: String,
@@ -110,7 +110,7 @@ pub fn create_inline_profile(
             label: display_name,
         },
     )?;
-    match persist_candidate(app, &storage, profile.clone(), source, None, true) {
+    match persist_candidate(app, &storage, profile.clone(), source, None, true).await {
         Ok(result) => Ok(result),
         Err(error) => {
             let _ = storage.delete_profile(profile.id);
@@ -136,8 +136,9 @@ pub async fn create_subscription_profile(
         )
     }) {
         let mut result = refresh_profile(app, existing.id).await?;
-        let activated = storage.activate_revision(existing.id, result.revision.id)?;
-        result.profile = PublicProfileRecord::from(&activated);
+        result.profile = activate_profile(app, existing.id, Some(result.revision.id))
+            .await?
+            .profile;
         return Ok(result);
     }
     let fetcher = SubscriptionFetcher::new()?;
@@ -156,7 +157,9 @@ pub async fn create_subscription_profile(
         source,
         Some(fetched.metadata),
         true,
-    ) {
+    )
+    .await
+    {
         Ok(result) => Ok(result),
         Err(error) => {
             let _ = storage.delete_profile(profile.id);
@@ -171,7 +174,6 @@ pub async fn refresh_profile(
 ) -> AppResult<ProfileOperationResult> {
     let storage = AppStorage::from_app(app)?;
     let profile = storage.load_profile(profile_id)?;
-    let activate_app = storage.state()?.active_profile_id == Some(profile_id);
     let ProfileSource::RemoteSubscription { url, user_agent } = &profile.source else {
         return Err(AppError::Conflict("该配置不是远程订阅".to_string()));
     };
@@ -205,29 +207,56 @@ pub async fn refresh_profile(
             .content
             .ok_or_else(|| AppError::Subscription("订阅内容为空".to_string()))?,
         Some(fetched.metadata),
-        activate_app,
+        false,
     )
+    .await
 }
 
-pub fn activate_profile(
+pub async fn activate_profile(
     app: &AppHandle,
     profile_id: Uuid,
     revision_id: Option<Uuid>,
 ) -> AppResult<ProfileDetails> {
+    let permit = user_rules::acquire_configuration(app)?;
     let storage = AppStorage::from_app(app)?;
     let profile = storage.load_profile(profile_id)?;
     let revision_id = revision_id
         .or(profile.active_revision_id)
         .ok_or_else(|| AppError::NotFound("配置没有可激活版本".to_string()))?;
-    let effective = storage.load_revision_effective(profile_id, revision_id)?;
-    runtime::validate_source(app, &effective)?;
-    storage.activate_revision(profile_id, revision_id)?;
+    let effective = activation_candidate(&storage, profile_id, revision_id)?;
+    user_rules::apply_profile_config(
+        app,
+        &storage,
+        &effective.yaml,
+        || commit_active_selection(&storage, profile_id, revision_id, &effective.yaml).map(|_| ()),
+        &permit,
+    )
+    .await?;
     profile_details(app, profile_id)
 }
 
-pub fn rollback_profile(app: &AppHandle, profile_id: Uuid) -> AppResult<ProfileDetails> {
-    AppStorage::from_app(app)?.rollback_profile(profile_id)?;
-    profile_details(app, profile_id)
+fn activation_candidate(
+    storage: &AppStorage,
+    profile_id: Uuid,
+    revision_id: Uuid,
+) -> AppResult<crate::effective::EffectiveConfig> {
+    let profile = storage.load_profile(profile_id)?;
+    let revision = storage.load_revision(profile_id, revision_id)?;
+    let source = storage.load_revision_source(profile_id, revision_id)?;
+    build_effective_config_with_policy(
+        &source,
+        &storage.settings()?,
+        profile.routing_mode,
+        Some(&revision.openai_policy),
+    )
+}
+
+pub async fn rollback_profile(app: &AppHandle, profile_id: Uuid) -> AppResult<ProfileDetails> {
+    let profile = AppStorage::from_app(app)?.load_profile(profile_id)?;
+    let revision_id = profile
+        .last_known_good_revision_id
+        .ok_or_else(|| AppError::Conflict("没有可回滚的稳定版本".to_string()))?;
+    activate_profile(app, profile_id, Some(revision_id)).await
 }
 
 pub fn delete_profile(app: &AppHandle, profile_id: Uuid) -> AppResult<()> {
@@ -247,14 +276,19 @@ pub fn set_routing_mode(
     profile_details(app, profile_id)
 }
 
-fn persist_candidate(
+async fn persist_candidate(
     app: &AppHandle,
     storage: &AppStorage,
     profile: ProfileRecord,
     source: String,
     metadata: Option<crate::models::SubscriptionMetadata>,
-    activate_app: bool,
+    force_activate: bool,
 ) -> AppResult<ProfileOperationResult> {
+    let permit = user_rules::acquire_configuration(app)?;
+    // Fetching can overlap unrelated work; take profile policy/settings only
+    // after entering the short mutation transaction, never from the fetch start.
+    let profile = storage.load_profile(profile.id)?;
+    let activate_app = force_activate || storage.state()?.active_profile_id == Some(profile.id);
     let settings = storage.settings()?;
     let effective = build_effective_config_with_policy(
         &source,
@@ -262,30 +296,155 @@ fn persist_candidate(
         profile.routing_mode,
         Some(&profile.openai_policy),
     )?;
-    runtime::validate_source(app, &effective.yaml)?;
     let validation = ValidationReport {
         valid: true,
         warnings: effective.summary.warnings.clone(),
         errors: Vec::new(),
         native_core_validated: true,
     };
-    let revision = storage.save_revision(
-        profile.id,
-        &source,
-        &effective.yaml,
-        metadata,
-        validation,
-        profile.openai_policy.clone(),
-    )?;
-    let profile = if activate_app {
-        storage.activate_revision(profile.id, revision.id)?
+    let mut revision = None;
+    if activate_app {
+        user_rules::apply_profile_config(
+            app,
+            storage,
+            &effective.yaml,
+            || {
+                let saved = storage.save_revision(
+                    profile.id,
+                    &source,
+                    &effective.yaml,
+                    metadata,
+                    validation,
+                    profile.openai_policy.clone(),
+                )?;
+                commit_active_selection(storage, profile.id, saved.id, &effective.yaml)?;
+                revision = Some(saved);
+                Ok(())
+            },
+            &permit,
+        )
+        .await?;
     } else {
-        storage.update_profile_revision(profile.id, revision.id)?
-    };
+        user_rules::validate_config(app, &effective.yaml).await?;
+        let saved = storage.save_revision(
+            profile.id,
+            &source,
+            &effective.yaml,
+            metadata,
+            validation,
+            profile.openai_policy.clone(),
+        )?;
+        if let Err(error) = storage.update_profile_revision(profile.id, saved.id) {
+            storage.save_profile(&profile)?;
+            return Err(error);
+        }
+        revision = Some(saved);
+    }
+    let revision = revision.ok_or_else(|| AppError::Runtime("配置事务未生成版本".to_string()))?;
+    let profile = storage.load_profile(profile.id)?;
     Ok(ProfileOperationResult {
         profile: PublicProfileRecord::from(&profile),
         revision,
         summary: effective.summary,
         updated: true,
     })
+}
+
+/// Roll back all selection files if any atomic file replacement fails. Source
+/// revisions stay immutable; active.yaml uses a freshly merged local overlay.
+pub(crate) fn commit_active_selection(
+    storage: &AppStorage,
+    profile_id: Uuid,
+    revision_id: Uuid,
+    effective: &str,
+) -> AppResult<ProfileRecord> {
+    let previous_profile = storage.load_profile(profile_id)?;
+    let previous_state = storage.state()?;
+    let previous_config = storage.active_runtime_config()?;
+    match storage.activate_revision_with_config(profile_id, revision_id, effective) {
+        Ok(profile) => Ok(profile),
+        Err(error) => {
+            let rollback_errors = [
+                storage.save_profile(&previous_profile),
+                storage.save_state(&previous_state),
+                storage.restore_active_runtime_config(previous_config.as_deref()),
+            ]
+            .into_iter()
+            .filter_map(Result::err)
+            .map(|error| error.to_string())
+            .collect::<Vec<_>>();
+            if rollback_errors.is_empty() {
+                Err(error)
+            } else {
+                Err(AppError::Io(format!(
+                    "配置选择失败且部分文件恢复失败：{error}；{}",
+                    rollback_errors.join("；")
+                )))
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::models::OpenAiPolicy;
+    use crate::user_rules::{UserRule, UserRulesDocument};
+
+    #[test]
+    fn activating_old_revision_rebuilds_current_global_overrides() {
+        let root = std::env::temp_dir().join(format!("mihomo-codex-activation-{}", Uuid::new_v4()));
+        let storage = AppStorage::from_root(root.clone()).expect("storage");
+        let profile = storage
+            .create_profile(
+                "fixture".into(),
+                ProfileSource::Inline {
+                    label: "fixture".into(),
+                },
+            )
+            .expect("profile");
+        let source = "proxies: []\nproxy-groups: []\nrules: [MATCH,DIRECT]\n";
+        // Use a quoted one-line sequence: each rule is a single YAML scalar.
+        let source = source.replace("[MATCH,DIRECT]", "['MATCH,DIRECT']");
+        let revision = storage
+            .save_revision(
+                profile.id,
+                &source,
+                "stale-cache: true\n",
+                None,
+                ValidationReport {
+                    valid: true,
+                    ..Default::default()
+                },
+                OpenAiPolicy::default(),
+            )
+            .expect("revision");
+        let mut document = UserRulesDocument::default();
+        document.rules.push(UserRule {
+            id: "current".into(),
+            enabled: true,
+            rule: "DOMAIN,example.com,REJECT".into(),
+            note: String::new(),
+        });
+        storage
+            .save_user_rules(&document)
+            .expect("current global rule");
+        let candidate = activation_candidate(&storage, profile.id, revision.id).expect("candidate");
+        assert!(!candidate.yaml.contains("stale-cache"));
+        let yaml: serde_yaml::Value = serde_yaml::from_str(&candidate.yaml).expect("yaml");
+        assert_eq!(yaml["rules"][0].as_str(), Some("DOMAIN,example.com,REJECT"));
+        commit_active_selection(&storage, profile.id, revision.id, &candidate.yaml)
+            .expect("select");
+        assert_eq!(
+            storage.active_runtime_config().expect("snapshot"),
+            Some(candidate.yaml)
+        );
+        assert_eq!(
+            storage
+                .load_revision_effective(profile.id, revision.id)
+                .expect("immutable cache"),
+            "stale-cache: true\n"
+        );
+        std::fs::remove_dir_all(root).expect("cleanup");
+    }
 }

@@ -8,7 +8,7 @@
       http-equiv="Content-Security-Policy"
       content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self' ws://127.0.0.1:* ws://localhost:*; object-src 'none'; base-uri 'none'; form-action 'none'"
     />
-    <title>mihomo-codex · 隔离主题预览</title>
+    <title>mihomo-codex · 隔离主题与规则预览</title>
     <style>
       #fixture-banner {
         position: relative;
@@ -54,12 +54,18 @@
         <button id="fixture-system-dark" type="button">模拟系统深色</button>
       </div>
       <button id="fixture-fail-save" type="button" aria-pressed="false">下次主题保存失败</button>
+      <button id="fixture-rules-fail-save" type="button" aria-pressed="false">下次规则应用失败</button>
+      <button id="fixture-rules-conflict" type="button">模拟规则并发更新</button>
       <button id="fixture-reload" type="button">重载检查持久化</button>
       <button id="fixture-reset" type="button">重置测试数据</button>
       <div class="fixture-status" aria-live="polite">
         <span>保存主题：<output id="fixture-saved-theme">system</output></span>
         <span>模拟系统：<output id="fixture-system-appearance">light</output></span>
         <span>主题保存调用：<output id="fixture-theme-save-count">0</output></span>
+        <span>规则版本：<output id="fixture-rules-revision">1</output></span>
+        <span>规则保存调用：<output id="fixture-rules-save-count">0</output></span>
+        <span>规则回滚调用：<output id="fixture-rules-rollback-count">0</output></span>
+        <span>合成应用次数：<output id="fixture-rules-apply-count">0</output></span>
         <span>网络变更调用：<output id="fixture-network-mutation-count">0</output></span>
         <span>已拦截浏览器请求：<output id="fixture-browser-request-count">0</output></span>
         <span>运行时错误：<output id="fixture-runtime-error-count">0</output></span>

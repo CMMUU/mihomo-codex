@@ -3,6 +3,23 @@ import type { ThemePreference } from "./theme";
 export type NetworkMode = "manual" | "system_proxy" | "tun";
 export type RoutingMode = "rule" | "global" | "direct";
 
+export type UserRule = { id: string; enabled: boolean; rule: string; note: string };
+export type UserRulesState = {
+  revision: number;
+  rules: UserRule[];
+  history: Array<{ id: string; createdAt: string; count: number }>;
+  targets: string[];
+  warnings: string[];
+  routingMode: RoutingMode | null;
+};
+export type UserRulesValidation = {
+  valid: boolean;
+  errors: string[];
+  warnings: string[];
+  normalizedRules: UserRule[];
+  preview: string;
+};
+
 export type OpenAiNodeScore = {
   name: string;
   latencyMs: number;

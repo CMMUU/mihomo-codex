@@ -8,15 +8,19 @@ use serde::Serialize;
 use std::collections::VecDeque;
 use std::env;
 use std::fs;
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
+use std::time::{Duration, Instant};
 use tauri::{AppHandle, Manager};
 
 const MAX_LOG_LINES: usize = 2_000;
+const VALIDATION_TIMEOUT: Duration = Duration::from_secs(30);
+const MAX_VALIDATION_LOG_BYTES: u64 = 2 * 1024 * 1024;
+const VALIDATION_DIAGNOSTIC_BYTES: u64 = 32 * 1024;
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -462,21 +466,119 @@ fn runtime_directory(app: &AppHandle) -> AppResult<PathBuf> {
 }
 
 pub(crate) fn validate_file(binary: &Path, data_dir: &Path, config_path: &Path) -> AppResult<()> {
-    let output = Command::new(binary)
+    let mut command = Command::new(binary);
+    command
         .arg("-t")
         .arg("-d")
         .arg(data_dir)
         .arg("-f")
-        .arg(config_path)
-        .output()
-        .map_err(|error| AppError::Runtime(error.to_string()))?;
-    if output.status.success() {
+        .arg(config_path);
+    run_validation_command(&mut command, data_dir, VALIDATION_TIMEOUT)
+}
+
+struct ValidationLogCleanup(PathBuf);
+
+impl Drop for ValidationLogCleanup {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.0);
+    }
+}
+
+fn run_validation_command(
+    command: &mut Command,
+    data_dir: &Path,
+    timeout: Duration,
+) -> AppResult<()> {
+    let log_path = data_dir.join(format!("validation-output-{}.log", uuid::Uuid::new_v4()));
+    let _cleanup = ValidationLogCleanup(log_path.clone());
+    let mut options = fs::OpenOptions::new();
+    options.read(true).write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut log = options.open(&log_path)?;
+    command
+        .stdin(Stdio::null())
+        .stdout(Stdio::from(log.try_clone()?))
+        .stderr(Stdio::from(log.try_clone()?));
+    let spawned = command.spawn();
+    // Release the Command's copies as well as the child's handles before the
+    // cleanup guard removes its private file, including on Windows.
+    command.stdout(Stdio::null()).stderr(Stdio::null());
+    let mut child = spawned.map_err(|error| AppError::Runtime(error.to_string()))?;
+    let status = wait_for_validation(&mut child, &log, timeout)?;
+    if status.success() {
         return Ok(());
     }
-    let detail = first_non_empty_line(&output.stderr)
-        .or_else(|| first_non_empty_line(&output.stdout))
-        .unwrap_or_else(|| "配置校验失败".to_string());
-    Err(AppError::Config(redact(&detail)))
+    let length = log.metadata()?.len();
+    log.seek(SeekFrom::Start(
+        length.saturating_sub(VALIDATION_DIAGNOSTIC_BYTES),
+    ))?;
+    let mut bytes = Vec::new();
+    log.take(VALIDATION_DIAGNOSTIC_BYTES)
+        .read_to_end(&mut bytes)?;
+    Err(AppError::Config(validation_diagnostic(&bytes)))
+}
+
+fn wait_for_validation(
+    child: &mut Child,
+    log: &fs::File,
+    timeout: Duration,
+) -> AppResult<ExitStatus> {
+    let started = Instant::now();
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => return Ok(status),
+            Ok(None) => {}
+            Err(error) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(AppError::Runtime(error.to_string()));
+            }
+        }
+        let exceeded_log = match log.metadata() {
+            Ok(metadata) => metadata.len() > MAX_VALIDATION_LOG_BYTES,
+            Err(error) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(AppError::Io(error.to_string()));
+            }
+        };
+        if started.elapsed() >= timeout || exceeded_log {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(AppError::Runtime(if exceeded_log {
+                "Mihomo 校验日志超过 2 MiB，已终止校验进程".to_string()
+            } else {
+                format!(
+                    "Mihomo 配置校验超时（{} 秒），已终止校验进程",
+                    timeout.as_secs_f64()
+                )
+            }));
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+fn validation_diagnostic(bytes: &[u8]) -> String {
+    let text = String::from_utf8_lossy(bytes);
+    let detail = text
+        .lines()
+        .rev()
+        .find(|line| {
+            let line = line.to_ascii_lowercase();
+            line.contains("level=fatal") || line.contains("level=error") || line.contains("error:")
+        })
+        .or_else(|| text.lines().rev().find(|line| !line.trim().is_empty()))
+        .unwrap_or("配置校验失败");
+    let redacted = redact(detail);
+    let mut end = redacted.len().min(2048);
+    while !redacted.is_char_boundary(end) {
+        end -= 1;
+    }
+    redacted[..end].to_string()
 }
 
 fn preflight_ports(source: &str) -> AppResult<()> {
@@ -669,7 +771,9 @@ fn lock<'a, T>(mutex: &'a Mutex<T>, label: &str) -> AppResult<std::sync::MutexGu
 
 #[cfg(test)]
 mod tests {
-    use super::{preflight_ports, redact};
+    use super::{preflight_ports, redact, run_validation_command, validation_diagnostic};
+    use std::process::Command;
+    use std::time::{Duration, Instant};
 
     #[test]
     fn redacts_urls_and_uuids() {
@@ -687,5 +791,52 @@ mod tests {
         let source =
             format!("mixed-port: {port}\nexternal-controller: 127.0.0.1:19090\nproxies: []\n");
         assert!(preflight_ports(&source).is_err());
+    }
+
+    #[test]
+    fn validation_timeout_child_fixture() {
+        if std::env::var("MIHOMO_VALIDATION_TIMEOUT_FIXTURE").as_deref() == Ok("1") {
+            loop {
+                std::thread::sleep(Duration::from_secs(1));
+            }
+        }
+    }
+
+    #[test]
+    fn validation_timeout_kills_reaps_and_cleans_up_synthetic_child() {
+        let root = std::env::temp_dir().join(format!(
+            "mihomo-codex-validation-timeout-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&root).expect("fixture directory");
+        let mut command = Command::new(std::env::current_exe().expect("test binary"));
+        command
+            .args([
+                "--exact",
+                "runtime::tests::validation_timeout_child_fixture",
+                "--nocapture",
+            ])
+            .env("MIHOMO_VALIDATION_TIMEOUT_FIXTURE", "1");
+        let started = Instant::now();
+        let result = run_validation_command(&mut command, &root, Duration::from_millis(100))
+            .expect_err("synthetic child must time out");
+        assert!(result.to_string().contains("校验超时"));
+        assert!(started.elapsed() < Duration::from_secs(5));
+        assert_eq!(
+            std::fs::read_dir(&root).expect("remaining files").count(),
+            0
+        );
+        std::fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn validation_diagnostics_choose_error_and_redact_bounded_output() {
+        let text =
+            b"level=info starting\nlevel=error invalid rule token=fixture-secret\nlast info line\n";
+        let result = validation_diagnostic(text);
+        assert!(result.contains("invalid rule"));
+        assert!(!result.contains("fixture-secret"));
+        assert!(validation_diagnostic("x".repeat(4096).as_bytes()).len() <= 2048);
+        assert!(validation_diagnostic("错".repeat(4096).as_bytes()).len() <= 2048);
     }
 }

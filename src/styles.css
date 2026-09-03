@@ -750,6 +750,123 @@ td small { color: var(--muted); }
 .summary-strip { display: flex; gap: 22px; margin-bottom: 12px; color: var(--muted); font-size: 11px; }
 .summary-strip strong { margin-left: 5px; color: var(--text); }
 
+/* Local rule overrides share the same appearance tokens as the existing views. */
+.rule-manager-intro { margin: 7px 0 0; color: var(--muted); font-size: 11px; line-height: 1.6; }
+.rule-priority-note {
+  display: grid;
+  gap: 5px;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--input);
+  font-size: 11px;
+  line-height: 1.6;
+}
+.rule-priority-note strong { color: var(--accent); font-weight: 600; }
+.rule-priority-note span { color: var(--muted); }
+.rule-tabs { display: flex; gap: 5px; margin-top: 18px; padding-bottom: 10px; border-bottom: 1px solid var(--line); }
+.rule-tabs button {
+  min-height: 36px;
+  padding: 0 15px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  color: var(--muted);
+  background: transparent;
+  font-size: 12px;
+  cursor: pointer;
+}
+.rule-tabs button:hover:not(:disabled) { color: var(--text); background: var(--hover); }
+.rule-tabs button[aria-selected="true"] { color: var(--accent); border-color: var(--line-strong); background: var(--nav-active); }
+.rule-tabs button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.rule-tabs button:disabled { cursor: wait; opacity: 0.65; }
+.rule-tabs button span { margin-left: 6px; font-size: 10px; }
+.rule-manager-status { min-height: 18px; margin: 12px 0; color: var(--muted); font-size: 11px; line-height: 1.7; }
+.rule-manager-notices:empty { display: none; }
+.rule-manager-notices { margin-bottom: 12px; padding: 10px 12px; border: 1px solid rgba(var(--warning-rgb), 0.3); border-radius: 9px; background: rgba(var(--warning-rgb), 0.06); }
+.rule-manager-notices p { margin: 0; color: var(--warning); font-size: 11px; line-height: 1.7; }
+.user-rule-form {
+  display: grid;
+  grid-template-columns: minmax(135px, 0.8fr) minmax(180px, 1.5fr) minmax(150px, 1fr);
+  gap: 12px;
+  margin-bottom: 16px;
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--input);
+}
+.user-rule-editor-heading { display: flex; grid-column: 1 / -1; align-items: center; justify-content: space-between; gap: 10px; }
+.user-rule-editor-heading strong { font-size: 12px; }
+.user-rule-editor-heading span { color: var(--muted); font-size: 10px; }
+.user-rule-form > label { display: grid; gap: 6px; color: var(--muted); font-size: 10px; }
+.user-rule-note-field { grid-column: 1 / -1; }
+.user-rule-form input:not([type="checkbox"]), .user-rule-form select { min-width: 0; background-color: var(--panel); }
+.user-rule-options { display: flex; grid-column: 1 / -1; flex-wrap: wrap; align-items: center; gap: 12px 18px; }
+.user-rule-options label { color: var(--text); font-size: 10px; }
+.user-rule-options input { accent-color: var(--accent-strong); }
+.user-rule-options > span { color: var(--muted); font-size: 10px; }
+.user-rule-editor-actions { grid-column: 1 / -1; }
+.user-rules-list { display: grid; gap: 8px; }
+.user-rule-row {
+  display: grid;
+  grid-template-columns: 35px minmax(0, 1fr) minmax(60px, 130px) auto;
+  gap: 12px;
+  align-items: center;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel-soft);
+}
+.user-rule-order { display: grid; justify-items: center; gap: 6px; color: var(--muted); font-size: 10px; font-variant-numeric: tabular-nums; }
+.user-rule-order input { width: 15px; height: 15px; margin: 0; accent-color: var(--accent-strong); }
+.user-rule-row-copy { min-width: 0; }
+.user-rule-row-copy > div { display: flex; min-width: 0; flex-wrap: wrap; align-items: center; gap: 5px 8px; }
+.user-rule-row-copy strong { overflow: hidden; max-width: 100%; color: var(--text); font-size: 11px; font-weight: 500; text-overflow: ellipsis; white-space: nowrap; }
+.user-rule-row-copy p { overflow: hidden; margin: 6px 0 0; color: var(--muted); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+.rule-kind-badge { padding: 3px 6px; border: 1px solid var(--line); border-radius: 5px; color: var(--muted); font-size: 9px; }
+.rule-target-badge { overflow: hidden; padding: 5px 8px; border-radius: 6px; color: var(--accent); background: var(--accent-soft); font-size: 10px; text-align: center; text-overflow: ellipsis; white-space: nowrap; }
+.user-rule-row.is-disabled .user-rule-row-copy,
+.user-rule-row.is-disabled .rule-target-badge { opacity: 0.6; }
+.user-rule-row-actions { gap: 5px; }
+.user-rule-row-actions .button { min-height: 30px; padding: 0 9px; font-size: 10px; }
+.rule-empty-state { min-height: 124px; align-content: center; gap: 8px; padding: 20px; border: 1px dashed var(--line-strong); border-radius: 10px; }
+.rule-empty-state strong { color: var(--text); font-size: 12px; font-weight: 500; }
+.rule-text-label { color: var(--text); font-size: 12px; }
+.user-rules-text { min-height: 320px; margin-top: 12px; color: var(--text); font: 11px/1.7 "SFMono-Regular", Consolas, monospace; tab-size: 2; }
+.rule-text-actions { flex-wrap: wrap; margin-top: 12px; }
+.rule-text-actions .file-button { align-items: center; }
+.rule-export-panel { margin-top: 16px; padding: 14px; border: 1px solid var(--line-strong); border-radius: 10px; background: var(--panel-soft); }
+.rule-export-text { min-height: 190px; max-height: 340px; background: var(--input); }
+.rule-effective-toolbar { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; margin-bottom: 14px; }
+.rule-effective-toolbar > .hint { flex: 1; margin-top: 0; }
+.rule-effective-toolbar .toolbar { flex: 0 1 360px; }
+.rule-effective-toolbar #rule-search { min-width: 110px; }
+.rule-effective-toolbar #rules-refresh { flex-shrink: 0; }
+.rule-validation { margin-top: 16px; padding: 12px 14px; border: 1px solid var(--line-strong); border-radius: 10px; color: var(--text); background: var(--accent-soft); font-size: 11px; line-height: 1.7; }
+.rule-validation > strong { color: var(--accent); }
+.rule-validation > p { margin: 4px 0 0; overflow-wrap: anywhere; }
+.rule-validation.is-invalid { border-color: rgba(var(--danger-rgb), 0.35); background: rgba(var(--danger-rgb), 0.07); }
+.rule-validation.is-invalid > strong { color: var(--danger); }
+.rule-validation details { margin-top: 8px; }
+.rule-validation summary { color: var(--muted); cursor: pointer; }
+.rule-validation pre { max-height: 220px; margin: 8px 0 0; padding: 10px; overflow: auto; border: 1px solid var(--line); border-radius: 7px; background: var(--input); font: 10px/1.7 "SFMono-Regular", Consolas, monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
+.user-rules-actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px; margin-top: 16px; padding-top: 16px; border-top: 1px solid var(--line); }
+.user-rules-actions > span { color: var(--muted); font-size: 10px; }
+.user-rules-history { margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--line); }
+.user-rules-history summary { color: var(--muted); font-size: 11px; cursor: pointer; }
+.user-rules-history > .toolbar { flex-wrap: wrap; margin-top: 12px; }
+.user-rules-history label { color: var(--muted); font-size: 10px; }
+.user-rules-history select { flex: 1; width: auto; min-width: 180px; }
+@media (max-width: 1080px) {
+  .user-rule-form { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+  .user-rule-value-field { grid-column: 2; }
+  .user-rule-form > label:nth-of-type(3) { grid-column: 1 / -1; }
+  .user-rule-editor-heading { align-items: flex-start; flex-direction: column; }
+  .user-rule-row { grid-template-columns: 30px minmax(0, 1fr) minmax(60px, 130px); }
+  .user-rule-row-actions { grid-column: 2 / -1; justify-content: flex-end; }
+  .rule-effective-toolbar { flex-direction: column; }
+  .rule-effective-toolbar .toolbar { width: 100%; flex-basis: auto; }
+}
+
 .log-list { height: min(620px, calc(100vh - 210px)); overflow: auto; border: 1px solid var(--line); border-radius: 10px; background: var(--input); font: 11px/1.55 "SFMono-Regular", Consolas, monospace; }
 .log-row { display: grid; grid-template-columns: 82px 62px minmax(0, 1fr); gap: 10px; padding: 7px 10px; border-bottom: 1px solid rgba(var(--text-rgb), 0.07); }
 .log-row time, .log-row span { color: var(--muted); }
@@ -912,6 +1029,7 @@ td small { color: var(--muted); }
   .theme-option { transition: none; }
 }
 .checkbox-row { display: flex !important; align-items: center; gap: 9px !important; }
+.checkbox-row.is-hidden { display: none !important; }
 .checkbox-row input { width: 16px; height: 16px; }
 .settings-note { margin-top: 20px; padding: 12px; border: 1px solid var(--line); border-radius: 9px; color: var(--muted); background: var(--panel-soft); font-size: 11px; line-height: 1.7; }
 .tun-helper-panel {
@@ -1073,6 +1191,8 @@ td small { color: var(--muted); }
   background: var(--input);
 }
 .brand strong { color: var(--text); font-size: 14px; font-weight: 600; }
+.brand-mark:has(img) { overflow: hidden; border: 0; background: transparent; }
+.brand-mark img { display: block; width: 100%; height: 100%; object-fit: contain; }
 .brand span { color: var(--muted); font-size: 10px; }
 .nav-list { gap: 4px; }
 .nav-item {

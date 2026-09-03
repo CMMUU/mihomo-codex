@@ -3,6 +3,7 @@ use crate::models::{
     AppSettings, ConfigRevision, OpenAiPolicy, PersistentAppState, ProfileRecord, ProfileSource,
     SubscriptionMetadata, ValidationReport, CURRENT_SCHEMA_VERSION,
 };
+use crate::user_rules::UserRulesDocument;
 use chrono::Utc;
 use serde::{de::DeserializeOwned, Serialize};
 use sha2::{Digest, Sha256};
@@ -37,8 +38,9 @@ impl AppStorage {
     pub fn settings(&self) -> AppResult<AppSettings> {
         let path = self.root.join("settings.json");
         if !path.exists() {
-            let settings = AppSettings::default();
+            let mut settings = AppSettings::default();
             self.save_settings(&settings)?;
+            settings.user_rules = self.user_rules()?.rules;
             return Ok(settings);
         }
         let mut settings: AppSettings = read_json(&path)?;
@@ -46,11 +48,37 @@ impl AppStorage {
             settings.schema_version = CURRENT_SCHEMA_VERSION;
             self.save_settings(&settings)?;
         }
+        settings.user_rules = self.user_rules()?.rules;
         Ok(settings)
     }
 
     pub fn save_settings(&self, settings: &AppSettings) -> AppResult<()> {
         write_json_atomic(&self.root.join("settings.json"), settings)
+    }
+
+    pub fn user_rules(&self) -> AppResult<UserRulesDocument> {
+        let path = self.root.join("user-rules.json");
+        if !path.exists() {
+            return Ok(UserRulesDocument::default());
+        }
+        if fs::metadata(&path)?.len() > 16 * 1024 * 1024 {
+            return Err(AppError::Io("用户规则存储超过大小限制".to_string()));
+        }
+        let document: UserRulesDocument = read_json(&path)?;
+        document.validate_storage()?;
+        Ok(document)
+    }
+
+    pub fn save_user_rules(&self, document: &UserRulesDocument) -> AppResult<()> {
+        document.validate_storage()?;
+        if serde_json::to_vec_pretty(document)
+            .map_err(|error| AppError::Io(error.to_string()))?
+            .len()
+            > 16 * 1024 * 1024
+        {
+            return Err(AppError::Io("用户规则及历史总大小超过 16 MiB".to_string()));
+        }
+        write_json_atomic(&self.root.join("user-rules.json"), document)
     }
 
     pub fn state(&self) -> AppResult<PersistentAppState> {
@@ -199,12 +227,22 @@ impl AppStorage {
         self.read_revision_file(profile_id, revision_id, "effective.yaml")
     }
 
+    #[cfg(test)]
     pub fn activate_revision(
         &self,
         profile_id: Uuid,
         revision_id: Uuid,
     ) -> AppResult<ProfileRecord> {
-        self.select_revision(profile_id, revision_id, true)
+        self.select_revision(profile_id, revision_id, true, None)
+    }
+
+    pub fn activate_revision_with_config(
+        &self,
+        profile_id: Uuid,
+        revision_id: Uuid,
+        effective: &str,
+    ) -> AppResult<ProfileRecord> {
+        self.select_revision(profile_id, revision_id, true, Some(effective))
     }
 
     pub fn update_profile_revision(
@@ -212,7 +250,7 @@ impl AppStorage {
         profile_id: Uuid,
         revision_id: Uuid,
     ) -> AppResult<ProfileRecord> {
-        self.select_revision(profile_id, revision_id, false)
+        self.select_revision(profile_id, revision_id, false, None)
     }
 
     fn select_revision(
@@ -220,8 +258,12 @@ impl AppStorage {
         profile_id: Uuid,
         revision_id: Uuid,
         activate_app: bool,
+        effective_override: Option<&str>,
     ) -> AppResult<ProfileRecord> {
-        let effective = self.load_revision_effective(profile_id, revision_id)?;
+        let effective = match effective_override {
+            Some(value) => value.to_string(),
+            None => self.load_revision_effective(profile_id, revision_id)?,
+        };
         let revision = self.load_revision(profile_id, revision_id)?;
         let mut profile = self.load_profile(profile_id)?;
         if profile.active_revision_id != Some(revision_id) {
@@ -249,6 +291,25 @@ impl AppStorage {
         Ok(profile)
     }
 
+    pub fn active_runtime_config(&self) -> AppResult<Option<String>> {
+        let path = self.root.join("runtime").join("active.yaml");
+        if path.exists() {
+            Ok(Some(fs::read_to_string(path)?))
+        } else {
+            Ok(None)
+        }
+    }
+
+    pub fn restore_active_runtime_config(&self, config: Option<&str>) -> AppResult<()> {
+        let path = self.root.join("runtime").join("active.yaml");
+        match config {
+            Some(config) => write_private_atomic(&path, config.as_bytes()),
+            None if path.exists() => fs::remove_file(path).map_err(AppError::from),
+            None => Ok(()),
+        }
+    }
+
+    #[cfg(test)]
     pub fn rollback_profile(&self, profile_id: Uuid) -> AppResult<ProfileRecord> {
         let profile = self.load_profile(profile_id)?;
         let revision_id = profile

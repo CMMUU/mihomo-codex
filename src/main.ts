@@ -1,6 +1,7 @@
 import "./styles.css";
 import { api, errorMessage, revisionLabel } from "./api";
 import { listen } from "@tauri-apps/api/event";
+import { mountRuleManager, ruleManagerMarkup } from "./rule-manager";
 import {
   THEME_OPTIONS,
   ThemeController,
@@ -107,6 +108,7 @@ const store: {
 
 const app = document.querySelector<HTMLDivElement>("#app");
 if (!app) throw new Error("#app not found");
+const appIconUrl = new URL("../assets/brand/app-icon-128.png", import.meta.url).href;
 let subscriptionImporting = false;
 let openAiTaskFinishedAt: string | null = null;
 let networkModeSwitching = false;
@@ -120,7 +122,7 @@ app.innerHTML = `
   <div class="app-shell">
     <aside class="sidebar">
       <div class="brand">
-        <div class="brand-mark">M</div>
+        <div class="brand-mark"><img src="${appIconUrl}" alt="" width="40" height="40" /></div>
         <div><strong>mihomo-codex</strong><span>轻量稳定代理客户端</span></div>
       </div>
       <nav class="nav-list" aria-label="主导航">
@@ -348,10 +350,7 @@ app.innerHTML = `
       </section>
 
       <section class="view-stack is-hidden" id="rules-view">
-        <article class="panel">
-          <div class="panel-heading"><div><div class="section-label">RULES</div><h2>当前规则</h2></div><div class="toolbar"><input id="rule-search" placeholder="搜索规则" /><button class="button button-quiet" id="rules-refresh">刷新</button></div></div>
-          <div class="table-wrap"><table><thead><tr><th>类型</th><th>内容</th><th>策略</th></tr></thead><tbody id="rules-body"><tr><td colspan="3">启动后加载规则</td></tr></tbody></table></div>
-        </article>
+        ${ruleManagerMarkup}
       </section>
 
       <section class="view-stack is-hidden" id="connections-view">
@@ -1354,45 +1353,18 @@ async function handleProfileAction(target: HTMLElement) {
   const profileId = target.dataset.profileId;
   if (!actionName || !profileId) return;
   if (actionName === "activate") {
-    const wasRunning = store.runtime?.phase === "running";
-    await action("配置已激活", async () => {
-      if (wasRunning) await api.stop();
-      const details = await api.activateProfile(profileId);
-      if (wasRunning) await api.startActive();
-      return details;
-    });
+    await action("配置已激活", () => api.activateProfile(profileId));
   } else if (actionName === "refresh") {
-    const wasRunning = store.runtime?.phase === "running";
-    const active = store.activeProfile?.profile.id === profileId;
-    await action("订阅已更新", async () => {
-      const result = await api.refreshProfile(profileId);
-      if (wasRunning && active && result.updated) {
-        await api.stop();
-        await api.startActive();
-      }
-      return result;
-    });
+    await action("订阅已更新", () => api.refreshProfile(profileId));
   } else if (actionName === "rollback") {
-    const wasRunning = store.runtime?.phase === "running";
-    const active = store.activeProfile?.profile.id === profileId;
-    await action("已回滚到上一稳定版本", async () => {
-      if (wasRunning && active) await api.stop();
-      const details = await api.rollbackProfile(profileId);
-      if (wasRunning && active) await api.startActive();
-      return details;
-    });
+    await action("已回滚到上一稳定版本", () => api.rollbackProfile(profileId));
   } else if (actionName === "delete") {
     await action("配置已删除", () => api.deleteProfile(profileId));
     store.selectedProfile = null;
   } else if (actionName === "revision") {
-    const wasRunning = store.runtime?.phase === "running";
-    const active = store.activeProfile?.profile.id === profileId;
-    await action("指定版本已激活", async () => {
-      if (wasRunning && active) await api.stop();
-      const details = await api.activateProfile(profileId, target.dataset.revisionId);
-      if (wasRunning && active) await api.startActive();
-      return details;
-    });
+    await action("指定版本已激活", () =>
+      api.activateProfile(profileId, target.dataset.revisionId),
+    );
   }
   await refreshBase();
   if (actionName !== "delete") {
@@ -1425,20 +1397,10 @@ async function refreshAllSubscriptions() {
   button.disabled = true;
   button.textContent = "正在刷新…";
   let updated = 0;
-  const wasRunning = store.runtime?.phase === "running";
-  const activeProfileId = store.activeProfile?.profile.id;
-  let activeUpdated = false;
   try {
     for (const subscription of store.subscriptions) {
       const result = await api.refreshProfile(subscription.profile.id);
-      if (result.updated) {
-        updated += 1;
-        if (subscription.profile.id === activeProfileId) activeUpdated = true;
-      }
-    }
-    if (wasRunning && activeUpdated) {
-      await api.stop();
-      await api.startActive();
+      if (result.updated) updated += 1;
     }
     toast(`订阅刷新完成，${updated} 个配置有更新`, "success");
   } catch (error) {
@@ -1469,24 +1431,9 @@ async function handleSubscriptionAction(target: HTMLElement) {
     return;
   }
   if (actionName === "refresh") {
-    const wasRunning = store.runtime?.phase === "running";
-    const active = store.activeProfile?.profile.id === profileId;
-    await action("订阅已更新并通过校验", async () => {
-      const result = await api.refreshProfile(profileId);
-      if (wasRunning && active && result.updated) {
-        await api.stop();
-        await api.startActive();
-      }
-      return result;
-    });
+    await action("订阅已更新并通过校验", () => api.refreshProfile(profileId));
   } else if (actionName === "activate") {
-    const wasRunning = store.runtime?.phase === "running";
-    const activated = await action("", async () => {
-      if (wasRunning) await api.stop();
-      const details = await api.activateProfile(profileId);
-      if (wasRunning) await api.startActive();
-      return details;
-    });
+    const activated = await action("", () => api.activateProfile(profileId));
     if (activated) toast("订阅已激活", "success");
   } else if (actionName === "delete") {
     const subscription = store.subscriptions.find(
@@ -1947,6 +1894,15 @@ async function runDiagnostics() {
     .join("");
 }
 
+const ruleManager = mountRuleManager($("#rules-view")!, {
+  api,
+  confirm: confirmAction,
+  error: errorMessage,
+  onApplied: async () => {
+    if (store.runtime?.phase === "running") await refreshRules();
+  },
+});
+
 function navigate(view: ViewName) {
   const previousView = store.view;
   const scroller = $("#page-scroll");
@@ -1973,7 +1929,10 @@ function navigate(view: ViewName) {
     if (store.runtime?.phase === "running") void refreshProxies();
   }
   if (view === "subscriptions") renderSubscriptions();
-  if (view === "rules" && store.runtime?.phase === "running") void refreshRules();
+  if (view === "rules") {
+    void ruleManager.refresh();
+    if (store.runtime?.phase === "running") void refreshRules();
+  }
   if (view === "connections" && store.runtime?.phase === "running") void refreshConnections();
   if (view === "logs") void refreshLogs();
   if (view === "diagnostics") void runDiagnostics();

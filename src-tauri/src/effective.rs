@@ -134,6 +134,8 @@ pub fn build_effective_config_with_policy(
         apply_openai_policy(root, policy, &mut summary)?;
     }
 
+    crate::user_rules::merge_into_config(root, &settings.user_rules, &mut summary)?;
+
     let yaml =
         serde_yaml::to_string(&document).map_err(|error| AppError::Config(error.to_string()))?;
     Ok(EffectiveConfig { yaml, summary })

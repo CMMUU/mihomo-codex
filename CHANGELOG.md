@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.4.0 - 2026-09-03
+
+- Replace the desktop and sidebar icons with the original “双路汇聚” routing monogram; preserve the application, data-directory and helper identities.
+- Add visual user-rule creation, editing, deletion, enable/disable, ordering and notes, alongside an advanced text editor and the live effective-rule view.
+- Support rule-only text/YAML import and a copyable export panel that preserves application-specific rule metadata.
+- Persist global user rules independently of subscriptions, prepend enabled rules ahead of managed AI/subscription rules, and retain the latest 20 previous rule snapshots.
+- Require structural, target and native Mihomo validation before applying a draft; warn about routing modes and reject stale revisions without losing drafts.
+- Apply rule and profile changes through a shared configuration transaction guard, with hot reload and restoration of the previous configuration on apply/persistence failure.
+- Rebuild profile activation, refresh and rollback from their original source plus current user rules; keep isolated OpenAI benchmarks independent of user-rule targets.
+- Bound native-validator execution time and diagnostic output, and add frontend, Rust, isolated-browser and real macOS save/rollback coverage.
+
 ## 0.3.2 - 2026-09-03
 
 - Add immediately saved appearance choices: neutral Light, neutral Dark, Deep Purple, and System (Light/Dark only).

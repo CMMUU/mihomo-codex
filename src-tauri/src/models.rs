@@ -107,6 +107,10 @@ pub struct AppSettings {
     pub controller_secret: String,
     pub update_channel: String,
     pub diagnostics_retention_days: u16,
+    /// Runtime overlay from the independent user-rules store; never serialized
+    /// into settings.json or included in the public settings API.
+    #[serde(skip)]
+    pub user_rules: Vec<crate::user_rules::UserRule>,
 }
 
 impl Default for AppSettings {
@@ -128,6 +132,7 @@ impl Default for AppSettings {
             controller_secret,
             update_channel: "stable".to_string(),
             diagnostics_retention_days: 7,
+            user_rules: Vec::new(),
         }
     }
 }
@@ -178,6 +183,7 @@ impl PublicAppSettings {
             controller_secret: current.controller_secret.clone(),
             update_channel: self.update_channel,
             diagnostics_retention_days: self.diagnostics_retention_days,
+            user_rules: current.user_rules.clone(),
         }
     }
 }

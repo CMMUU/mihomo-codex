@@ -3,10 +3,9 @@ use crate::effective::{build_effective_config, build_effective_config_with_polic
 use crate::error::{AppError, AppResult};
 use crate::mihomo_api::MihomoApiClient;
 use crate::models::{
-    AppSettings, NetworkMode, OpenAiNodeScore, OpenAiPolicy, RoutingMode, RuntimePhase,
-    ValidationReport,
+    AppSettings, NetworkMode, OpenAiNodeScore, OpenAiPolicy, RoutingMode, ValidationReport,
 };
-use crate::runtime::{self, MihomoRuntime};
+use crate::runtime;
 use crate::storage::AppStorage;
 use chrono::{DateTime, Utc};
 use futures_util::{stream, StreamExt};
@@ -324,6 +323,7 @@ async fn apply_policy_revision(
     profile_id: Uuid,
     policy: &OpenAiPolicy,
 ) -> AppResult<()> {
+    let permit = crate::user_rules::acquire_configuration(app)?;
     let storage = AppStorage::from_app(app)?;
     let profile = storage.load_profile(profile_id)?;
     let previous_revision_id = profile
@@ -334,41 +334,51 @@ async fn apply_policy_revision(
     let settings = storage.settings()?;
     let effective =
         build_effective_config_with_policy(&source, &settings, profile.routing_mode, Some(policy))?;
-    runtime::validate_source(app, &effective.yaml)?;
-    let revision = storage.save_revision(
-        profile_id,
-        &source,
-        &effective.yaml,
-        previous_revision.subscription.clone(),
-        ValidationReport {
-            valid: true,
-            warnings: effective.summary.warnings.clone(),
-            errors: Vec::new(),
-            native_core_validated: true,
-        },
-        policy.clone(),
-    )?;
+    let validation = ValidationReport {
+        valid: true,
+        warnings: effective.summary.warnings.clone(),
+        errors: Vec::new(),
+        native_core_validated: true,
+    };
     let applies_to_runtime = storage.state()?.active_profile_id == Some(profile_id);
     if applies_to_runtime {
-        storage.activate_revision(profile_id, revision.id)?;
+        crate::user_rules::apply_profile_config(
+            app,
+            &storage,
+            &effective.yaml,
+            || {
+                let revision = storage.save_revision(
+                    profile_id,
+                    &source,
+                    &effective.yaml,
+                    previous_revision.subscription.clone(),
+                    validation,
+                    policy.clone(),
+                )?;
+                crate::profile_service::commit_active_selection(
+                    &storage,
+                    profile_id,
+                    revision.id,
+                    &effective.yaml,
+                )?;
+                Ok(())
+            },
+            &permit,
+        )
+        .await?;
     } else {
-        storage.update_profile_revision(profile_id, revision.id)?;
-    }
-
-    let runtime = app.state::<MihomoRuntime>();
-    if applies_to_runtime && runtime.status(Some(app)).phase == RuntimePhase::Running {
-        let api = MihomoApiClient::new(&settings)?;
-        if let Err(error) = api.reload_config(&effective.yaml).await {
-            let previous_effective =
-                storage.load_revision_effective(profile_id, previous_revision_id)?;
-            let _ = storage.activate_revision(profile_id, previous_revision_id);
-            let rollback_result = api.reload_config(&previous_effective).await;
-            return match rollback_result {
-                Ok(()) => Err(error),
-                Err(rollback_error) => Err(AppError::Runtime(format!(
-                    "新配置加载失败且运行时回滚失败: {error}; {rollback_error}"
-                ))),
-            };
+        crate::user_rules::validate_config(app, &effective.yaml).await?;
+        let revision = storage.save_revision(
+            profile_id,
+            &source,
+            &effective.yaml,
+            previous_revision.subscription,
+            validation,
+            policy.clone(),
+        )?;
+        if let Err(error) = storage.update_profile_revision(profile_id, revision.id) {
+            storage.save_profile(&profile)?;
+            return Err(error);
         }
     }
     Ok(())
@@ -672,7 +682,12 @@ fn build_benchmark_config_with_listeners(
     candidates: &[CandidateNode],
     listeners: &[BandwidthListener],
 ) -> AppResult<String> {
-    let effective = build_effective_config(source, settings, RoutingMode::Rule)?;
+    // This isolated core measures candidate nodes rather than user traffic.
+    // A rule targeting a managed group must not break policy regeneration before
+    // that group exists; the main runtime still receives the persisted overlay.
+    let mut benchmark_settings = settings.clone();
+    benchmark_settings.user_rules.clear();
+    let effective = build_effective_config(source, &benchmark_settings, RoutingMode::Rule)?;
     let mut document: Value = serde_yaml::from_str(&effective.yaml)
         .map_err(|error| AppError::Config(error.to_string()))?;
     let root = document
@@ -1017,6 +1032,24 @@ rules:
                 .and_then(Value::as_str),
             Some("node-a")
         );
+    }
+
+    #[test]
+    fn benchmark_ignores_runtime_user_rules_without_mutating_the_overlay() {
+        let settings = AppSettings {
+            user_rules: vec![crate::user_rules::UserRule {
+                id: "fixture-rule".into(),
+                enabled: true,
+                rule: format!("DOMAIN,example.com,{}", crate::effective::OPENAI_GROUP_NAME),
+                note: String::new(),
+            }],
+            ..Default::default()
+        };
+        let candidates = extract_candidates(SOURCE).expect("candidates");
+        let yaml =
+            build_benchmark_config(SOURCE, &settings, &candidates).expect("isolated benchmark");
+        assert!(!yaml.contains("DOMAIN,example.com"));
+        assert_eq!(settings.user_rules.len(), 1);
     }
 
     #[test]

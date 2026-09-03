@@ -1,6 +1,6 @@
 [package]
 name = "mihomo-codex"
-version = "0.3.2"
+version = "0.4.0"
 description = "Lightweight cross-platform Mihomo desktop client"
 authors = ["cmmuu"]
 edition = "2021"

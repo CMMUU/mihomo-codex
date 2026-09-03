@@ -6,7 +6,7 @@
 
 - 私有源码仓库：[CMMUU/mihomo-codex](https://github.com/CMMUU/mihomo-codex)
 - 版本发布：[GitHub Releases](https://github.com/CMMUU/mihomo-codex/releases)
-- 当前版本 [v0.3.2](https://github.com/CMMUU/mihomo-codex/releases/tag/v0.3.2) 提供 macOS Apple Silicon（macOS 13+）安装包与 SHA-256 校验文件，新增独立浅色、深色与深紫主题。
+- 当前版本 [v0.4.0](https://github.com/CMMUU/mihomo-codex/releases/tag/v0.4.0) 提供 macOS Apple Silicon（macOS 13+）安装包与 SHA-256 校验文件，新增可视化规则管理、高级文本入口、规则版本回滚和全新图标。
 - Windows、Linux 和 Intel Mac 仍需对应平台的安装与网络接管验收；构建配置存在不等于已完成平台验证。
 - 仓库及 Release 为私有，仅有仓库权限的账号可访问。本次没有为自研应用新增开源授权条款；第三方依赖沿用各自许可证。
 
@@ -14,6 +14,9 @@
 
 - [软件设计说明书（SDD）](docs/软件设计说明书.md)
 - [架构与里程碑](docs/架构与里程碑.md)
+- [v0.4.0 发布说明](docs/发布说明-v0.4.0.md)
+- [规则管理与升级验证](docs/规则管理与升级验证.md)
+- [当前应用图标](assets/brand/图标说明.md)
 - [v0.3.2 发布说明](docs/发布说明-v0.3.2.md)
 - [0.3.1 更名与安装验证](docs/更名与安装验证.md)
 - [v0.3.1 发布说明](docs/发布说明-v0.3.1.md)
@@ -23,7 +26,7 @@
 - [Figma 节点详情弹窗](https://www.figma.com/design/aqVzL0f9upkr8BiYNCy2fu?node-id=24-174)
 - [Figma 应用内流量组件](https://www.figma.com/design/aqVzL0f9upkr8BiYNCy2fu?node-id=27-3)
 - [Figma 菜单栏流量组件](https://www.figma.com/design/aqVzL0f9upkr8BiYNCy2fu?node-id=27-15)
-- [Figma 应用图标设计](https://www.figma.com/design/aqVzL0f9upkr8BiYNCy2fu?node-id=12-3)
+- [历史 Figma 应用图标设计（0.3.x）](https://www.figma.com/design/aqVzL0f9upkr8BiYNCy2fu?node-id=12-3)
 - [更新日志](CHANGELOG.md)
 
 ## 当前范围
@@ -44,6 +47,20 @@
 - 独立于 Mihomo 的 OS 全局实时流量监控，应用内和 macOS 菜单栏均显示纵向上下行速率
 - 系统托盘、单实例和登录启动设置
 - 独立浅色、深色、深紫与跟随系统外观，点击立即生效并保存，不触发代理接管
+- 可视化全局规则管理：增删改、启停、上下排序、备注、草稿校验与热更新
+- 高级规则文本导入与可复制导出、独立持久化、最近 20 个历史版本与校验后回滚
+
+## 自定义规则
+
+1. 打开「规则 → 我的规则」，添加匹配条件，选择 `DIRECT`、`REJECT` 或当前配置中的策略。
+2. 使用上移／下移调整优先级；未启用的规则保留在编辑器中，但不加入内核配置。
+3. 点击「校验草稿」，通过后「保存并应用」。运行中的内核热更新，不先停止代理进程。
+4. 「高级文本」接受逐行规则、YAML 列表或仅含 `rules:` 的 YAML；「导出文本」提供只读文本与复制入口，由用户自行保存文件。
+5. 在「历史版本与回滚」选择版本并确认。回滚也会校验并生成新版本。
+
+全局用户规则优先于托管 AI 与订阅规则，更新订阅不会覆盖它们。`DIRECT` 表示进入 Mihomo 的连接从本机直连出口，并非修改系统代理例外列表；不使用系统代理的程序原有直连行为保持不变。规则分流应使用 `Rule` 路由模式。
+
+导出中的 `mihomo-codex-rule` 注释用于本应用恢复启停、备注与顺序。导出内容是规则编辑数据，不是完整代理配置；交给其他客户端前需按其规则格式处理停用条目。
 
 ## 更名与升级兼容
 
@@ -74,6 +91,8 @@ Mihomo 运行时会先执行 `mihomo -t -d <data> -f <config>` 配置检查，�
 ```bash
 npm run test:branding
 npm run test:licenses
+npm run test:theme
+npm run test:rules
 npm run build
 npm run test:rust
 cargo check --manifest-path src-tauri/Cargo.toml

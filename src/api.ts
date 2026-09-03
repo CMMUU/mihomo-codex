@@ -21,6 +21,9 @@ import type {
   SystemProxyStatus,
   SubscriptionOverview,
   TunHelperStatus,
+  UserRule,
+  UserRulesState,
+  UserRulesValidation,
 } from "./types";
 
 export const api = {
@@ -85,6 +88,15 @@ export const api = {
   currentNodeDetails: (group: string) =>
     invoke<CurrentNodeDetails>("get_current_node_details", { group }),
   rules: () => invoke<Record<string, unknown>>("get_rules"),
+  userRules: () => invoke<UserRulesState>("get_user_rules"),
+  validateUserRules: (rules: UserRule[]) =>
+    invoke<UserRulesValidation>("validate_user_rules", { rules }),
+  saveUserRules: (rules: UserRule[], expectedRevision: number) =>
+    invoke<UserRulesState>("save_user_rules", { rules, expectedRevision }),
+  rollbackUserRules: (revisionId: string, expectedRevision: number) =>
+    invoke<UserRulesState>("rollback_user_rules", { revisionId, expectedRevision }),
+  parseUserRulesText: (text: string) =>
+    invoke<UserRule[]>("parse_user_rules_text", { text }),
   connections: () => invoke<Record<string, unknown>>("get_connections"),
   selectProxy: (group: string, proxy: string) =>
     invoke<void>("select_proxy", { group, proxy }),

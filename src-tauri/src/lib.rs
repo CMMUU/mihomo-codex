@@ -15,6 +15,7 @@ mod storage;
 mod subscription;
 mod traffic_monitor;
 pub mod tun_service;
+mod user_rules;
 
 use config::{inspect_profile, ProfileSummary};
 use diagnostics::DiagnosticCheck;
@@ -38,6 +39,7 @@ use tauri::{
 use tauri_plugin_autostart::ManagerExt;
 use traffic_monitor::{GlobalTrafficMonitor, GlobalTrafficSnapshot, TRAY_ID};
 use tun_service::TunHelperStatus;
+use user_rules::{UserRule, UserRulesState, UserRulesValidation};
 use uuid::Uuid;
 
 #[derive(Debug, Serialize)]
@@ -96,6 +98,46 @@ fn get_settings(app: AppHandle) -> Result<PublicAppSettings, AppErrorDto> {
 }
 
 #[tauri::command]
+fn get_user_rules(app: AppHandle) -> Result<UserRulesState, AppErrorDto> {
+    user_rules::get(&app).map_err(dto)
+}
+
+#[tauri::command]
+fn parse_user_rules_text(text: String) -> Result<Vec<UserRule>, AppErrorDto> {
+    user_rules::parse_text(&text).map_err(dto)
+}
+
+#[tauri::command]
+async fn validate_user_rules(
+    app: AppHandle,
+    rules: Vec<UserRule>,
+) -> Result<UserRulesValidation, AppErrorDto> {
+    user_rules::validate(&app, rules).await.map_err(dto)
+}
+
+#[tauri::command]
+async fn save_user_rules(
+    app: AppHandle,
+    rules: Vec<UserRule>,
+    expected_revision: u64,
+) -> Result<UserRulesState, AppErrorDto> {
+    user_rules::save(&app, rules, expected_revision)
+        .await
+        .map_err(dto)
+}
+
+#[tauri::command]
+async fn rollback_user_rules(
+    app: AppHandle,
+    revision_id: String,
+    expected_revision: u64,
+) -> Result<UserRulesState, AppErrorDto> {
+    user_rules::rollback(&app, &revision_id, expected_revision)
+        .await
+        .map_err(dto)
+}
+
+#[tauri::command]
 fn set_app_theme(app: AppHandle, theme: String) -> Result<PublicAppSettings, AppErrorDto> {
     appearance::native_theme(&theme).map_err(dto)?;
     let storage = AppStorage::from_app(&app).map_err(dto)?;
@@ -111,6 +153,7 @@ fn update_settings(
     traffic: State<'_, GlobalTrafficMonitor>,
     settings: PublicAppSettings,
 ) -> Result<PublicAppSettings, AppErrorDto> {
+    let _configuration = user_rules::acquire_configuration(&app).map_err(dto)?;
     let storage = AppStorage::from_app(&app).map_err(dto)?;
     let current = storage.settings().map_err(dto)?;
     let changes_runtime_network = settings.network_mode != current.network_mode
@@ -202,12 +245,14 @@ fn get_active_profile(app: AppHandle) -> Result<Option<ProfileDetails>, AppError
 }
 
 #[tauri::command]
-fn create_inline_profile(
+async fn create_inline_profile(
     app: AppHandle,
     display_name: String,
     source: String,
 ) -> Result<ProfileOperationResult, AppErrorDto> {
-    profile_service::create_inline_profile(&app, display_name, source).map_err(dto)
+    profile_service::create_inline_profile(&app, display_name, source)
+        .await
+        .map_err(dto)
 }
 
 #[tauri::command]
@@ -244,21 +289,26 @@ async fn refresh_profile(
 }
 
 #[tauri::command]
-fn activate_profile(
+async fn activate_profile(
     app: AppHandle,
     profile_id: Uuid,
     revision_id: Option<Uuid>,
 ) -> Result<ProfileDetails, AppErrorDto> {
-    profile_service::activate_profile(&app, profile_id, revision_id).map_err(dto)
+    profile_service::activate_profile(&app, profile_id, revision_id)
+        .await
+        .map_err(dto)
 }
 
 #[tauri::command]
-fn rollback_profile(app: AppHandle, profile_id: Uuid) -> Result<ProfileDetails, AppErrorDto> {
-    profile_service::rollback_profile(&app, profile_id).map_err(dto)
+async fn rollback_profile(app: AppHandle, profile_id: Uuid) -> Result<ProfileDetails, AppErrorDto> {
+    profile_service::rollback_profile(&app, profile_id)
+        .await
+        .map_err(dto)
 }
 
 #[tauri::command]
 fn delete_profile(app: AppHandle, profile_id: Uuid) -> Result<(), AppErrorDto> {
+    let _configuration = user_rules::acquire_configuration(&app).map_err(dto)?;
     profile_service::delete_profile(&app, profile_id).map_err(dto)
 }
 
@@ -277,6 +327,7 @@ async fn start_active_profile(
     app: AppHandle,
     state: State<'_, MihomoRuntime>,
 ) -> Result<RuntimeStatus, AppErrorDto> {
+    let _configuration = user_rules::acquire_configuration(&app).map_err(dto)?;
     let storage = AppStorage::from_app(&app).map_err(dto)?;
     let settings = storage.settings().map_err(dto)?;
     let effective = active_effective_config(&app, &settings).map_err(dto)?;
@@ -436,6 +487,7 @@ fn stop_mihomo(
     app: AppHandle,
     state: State<'_, MihomoRuntime>,
 ) -> Result<RuntimeStatus, AppErrorDto> {
+    let _configuration = user_rules::acquire_configuration(&app).map_err(dto)?;
     let proxy_result = platform::restore_system_proxy(&app);
     let status = state.stop(Some(&app)).map_err(dto)?;
     AppStorage::from_app(&app)
@@ -466,6 +518,7 @@ fn set_network_mode(
     state: State<'_, MihomoRuntime>,
     mode: NetworkMode,
 ) -> Result<PublicAppSettings, AppErrorDto> {
+    let _configuration = user_rules::acquire_configuration(&app).map_err(dto)?;
     if state.status(Some(&app)).phase == models::RuntimePhase::Running {
         return Err(dto(AppError::Conflict(
             "请先停止 Mihomo 再切换网络模式".to_string(),
@@ -494,6 +547,7 @@ async fn set_profile_routing_mode(
     profile_id: Uuid,
     mode: RoutingMode,
 ) -> Result<ProfileDetails, AppErrorDto> {
+    let _configuration = user_rules::acquire_configuration(&app).map_err(dto)?;
     let storage = AppStorage::from_app(&app).map_err(dto)?;
     let old_mode = storage.load_profile(profile_id).map_err(dto)?.routing_mode;
     let details = profile_service::set_routing_mode(&app, profile_id, mode).map_err(dto)?;
@@ -692,6 +746,7 @@ pub fn run() {
         .manage(SubscriptionImportGuard::default())
         .manage(OpenAiPolicyTaskManager::default())
         .manage(GlobalTrafficMonitor::default())
+        .manage(user_rules::ConfigurationMutationGuard::default())
         .setup(|app| {
             let storage = AppStorage::from_app(app.handle()).map_err(|error| error.to_string())?;
             let settings = storage.settings().map_err(|error| error.to_string())?;
@@ -733,6 +788,9 @@ pub fn run() {
                         show_home_window(app);
                     }
                     "stop" => {
+                        let Ok(_configuration) = user_rules::acquire_configuration(app) else {
+                            return;
+                        };
                         let _ = platform::restore_system_proxy(app);
                         let runtime = app.state::<MihomoRuntime>();
                         let _ = runtime.stop(Some(app));
@@ -759,6 +817,11 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             app_info,
             get_settings,
+            get_user_rules,
+            parse_user_rules_text,
+            validate_user_rules,
+            save_user_rules,
+            rollback_user_rules,
             set_app_theme,
             update_settings,
             global_traffic_snapshot,
