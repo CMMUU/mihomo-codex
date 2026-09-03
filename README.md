@@ -6,7 +6,7 @@
 
 - 私有源码仓库：[CMMUU/mihomo-codex](https://github.com/CMMUU/mihomo-codex)
 - 版本发布：[GitHub Releases](https://github.com/CMMUU/mihomo-codex/releases)
-- 首版 `v0.3.1` 提供 macOS Apple Silicon（macOS 13+）安装包与 SHA-256 校验文件。
+- 当前版本 [v0.3.2](https://github.com/CMMUU/mihomo-codex/releases/tag/v0.3.2) 提供 macOS Apple Silicon（macOS 13+）安装包与 SHA-256 校验文件，新增独立浅色、深色与深紫主题。
 - Windows、Linux 和 Intel Mac 仍需对应平台的安装与网络接管验收；构建配置存在不等于已完成平台验证。
 - 仓库及 Release 为私有，仅有仓库权限的账号可访问。本次没有为自研应用新增开源授权条款；第三方依赖沿用各自许可证。
 
@@ -14,6 +14,7 @@
 
 - [软件设计说明书（SDD）](docs/软件设计说明书.md)
 - [架构与里程碑](docs/架构与里程碑.md)
+- [v0.3.2 发布说明](docs/发布说明-v0.3.2.md)
 - [0.3.1 更名与安装验证](docs/更名与安装验证.md)
 - [v0.3.1 发布说明](docs/发布说明-v0.3.1.md)
 - [0.3.0 运行验证记录](docs/运行验证记录.md)

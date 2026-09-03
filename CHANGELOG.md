@@ -1,12 +1,13 @@
 # Changelog
 
-## Unreleased (0.3.2)
+## 0.3.2 - 2026-09-03
 
 - Add immediately saved appearance choices: neutral Light, neutral Dark, Deep Purple, and System (Light/Dark only).
 - Repair the historical light/dark CSS overrides and synchronize the native application appearance with the saved preference.
 - Add a theme-only settings command that preserves proxy ports, subscriptions, autostart preferences and controller credentials.
 - Restore the previous appearance when persistence fails and prevent concurrent theme writes.
 - Add theme state-machine tests, backend persistence tests, and an isolated browser preview fixture for visual regression checks without proxy takeover.
+- Fix unused Unix-only permission parameters and command helpers in Windows strict Clippy checks without changing runtime behavior.
 
 ## 0.3.1 - 2026-09-03
 
