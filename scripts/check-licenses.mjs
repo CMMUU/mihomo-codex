@@ -1,0 +1,20 @@
+import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+
+const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const manifest = JSON.parse(readFileSync(join(root, "src-tauri/core-manifest.json"), "utf8"));
+const license = readFileSync(join(root, "third-party/Mihomo-LICENSE.txt"));
+assert.equal(manifest.license, "GPL-3.0");
+assert.equal(manifest.licenseUrl, `https://raw.githubusercontent.com/MetaCubeX/mihomo/v${manifest.version}/LICENSE`);
+assert.equal(manifest.sourceUrl, `https://github.com/MetaCubeX/mihomo/archive/refs/tags/v${manifest.version}.tar.gz`);
+assert.ok(license.includes("GNU GENERAL PUBLIC LICENSE"));
+assert.ok(license.includes("Version 3, 29 June 2007"));
+assert.equal(createHash("sha256").update(license).digest("hex"), manifest.licenseSha256);
+const notices = readFileSync(join(root, "THIRD_PARTY_NOTICES.md"), "utf8");
+assert.ok(notices.includes(`Bundled version: ${manifest.version}`));
+assert.ok(notices.includes("GNU General Public License v3 (GPL-3.0)"));
+assert.ok(notices.includes(manifest.sourceUrl));
+console.log(`Mihomo ${manifest.version}: pinned GPL v3 license and source reference verified`);

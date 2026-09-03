@@ -1,0 +1,48 @@
+{
+  "schemaVersion": 1,
+  "version": "1.19.30",
+  "releaseBaseUrl": "https://github.com/MetaCubeX/mihomo/releases/download/v1.19.30",
+  "repository": "https://github.com/MetaCubeX/mihomo",
+  "license": "GPL-3.0",
+  "targets": {
+    "aarch64-apple-darwin": {
+      "asset": "mihomo-darwin-arm64-v1.19.30.gz",
+      "sha256": "2c7f3a7904fa1cee291e124123e630e7b1ebd13765dd9bf26c0a28432004d9f4",
+      "archive": "gzip",
+      "executable": "mihomo-aarch64-apple-darwin"
+    },
+    "x86_64-apple-darwin": {
+      "asset": "mihomo-darwin-amd64-compatible-v1.19.30.gz",
+      "sha256": "6e75de0732e8afabe413ff7c235e8f16226ce136672371c60787cbf9607402c5",
+      "archive": "gzip",
+      "executable": "mihomo-x86_64-apple-darwin"
+    },
+    "x86_64-pc-windows-msvc": {
+      "asset": "mihomo-windows-amd64-compatible-v1.19.30.zip",
+      "sha256": "289fde5e29d37a5b3326480590d8b3551c5bf7f8737290355c19bce74d57a563",
+      "archive": "zip",
+      "executable": "mihomo-x86_64-pc-windows-msvc.exe"
+    },
+    "aarch64-pc-windows-msvc": {
+      "asset": "mihomo-windows-arm64-v1.19.30.zip",
+      "sha256": "b37c4b0259e85b020edc4215aa4c86052e21071cf520d4800364b21b4e2fc162",
+      "archive": "zip",
+      "executable": "mihomo-aarch64-pc-windows-msvc.exe"
+    },
+    "x86_64-unknown-linux-gnu": {
+      "asset": "mihomo-linux-amd64-compatible-v1.19.30.gz",
+      "sha256": "db214c7a2517e63c150d123178d16d102e03a241ccdae4e5e07ffbe9cf56c6f9",
+      "archive": "gzip",
+      "executable": "mihomo-x86_64-unknown-linux-gnu"
+    },
+    "aarch64-unknown-linux-gnu": {
+      "asset": "mihomo-linux-arm64-v1.19.30.gz",
+      "sha256": "58896873736d28628f66de3677c8654fa0f180662523148e136cff4f6e890069",
+      "archive": "gzip",
+      "executable": "mihomo-aarch64-unknown-linux-gnu"
+    }
+  },
+  "licenseUrl": "https://raw.githubusercontent.com/MetaCubeX/mihomo/v1.19.30/LICENSE",
+  "licenseSha256": "3972dc9744f6499f0f9b2dbf76696f2ae7ad8af9b23dde66d6af86c9dfb36986",
+  "sourceUrl": "https://github.com/MetaCubeX/mihomo/archive/refs/tags/v1.19.30.tar.gz"
+}

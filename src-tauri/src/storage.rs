@@ -1,0 +1,526 @@
+use crate::error::{AppError, AppResult};
+use crate::models::{
+    AppSettings, ConfigRevision, OpenAiPolicy, PersistentAppState, ProfileRecord, ProfileSource,
+    SubscriptionMetadata, ValidationReport, CURRENT_SCHEMA_VERSION,
+};
+use chrono::Utc;
+use serde::{de::DeserializeOwned, Serialize};
+use sha2::{Digest, Sha256};
+use std::fs;
+use std::io::Write;
+use std::path::{Path, PathBuf};
+use tauri::{AppHandle, Manager};
+use uuid::Uuid;
+
+#[derive(Debug, Clone)]
+pub struct AppStorage {
+    root: PathBuf,
+}
+
+impl AppStorage {
+    pub fn from_app(app: &AppHandle) -> AppResult<Self> {
+        let root = app
+            .path()
+            .app_data_dir()
+            .map_err(|error| AppError::Io(error.to_string()))?;
+        Self::from_root(root)
+    }
+
+    pub fn from_root(root: PathBuf) -> AppResult<Self> {
+        fs::create_dir_all(&root)?;
+        set_private_directory_permissions(&root)?;
+        let storage = Self { root };
+        storage.ensure_layout()?;
+        Ok(storage)
+    }
+
+    pub fn settings(&self) -> AppResult<AppSettings> {
+        let path = self.root.join("settings.json");
+        if !path.exists() {
+            let settings = AppSettings::default();
+            self.save_settings(&settings)?;
+            return Ok(settings);
+        }
+        let mut settings: AppSettings = read_json(&path)?;
+        if settings.schema_version < CURRENT_SCHEMA_VERSION {
+            settings.schema_version = CURRENT_SCHEMA_VERSION;
+            self.save_settings(&settings)?;
+        }
+        Ok(settings)
+    }
+
+    pub fn save_settings(&self, settings: &AppSettings) -> AppResult<()> {
+        write_json_atomic(&self.root.join("settings.json"), settings)
+    }
+
+    pub fn state(&self) -> AppResult<PersistentAppState> {
+        let path = self.root.join("state.json");
+        if !path.exists() {
+            return Ok(PersistentAppState {
+                schema_version: CURRENT_SCHEMA_VERSION,
+                clean_shutdown: true,
+                ..Default::default()
+            });
+        }
+        read_json(&path)
+    }
+
+    pub fn save_state(&self, state: &PersistentAppState) -> AppResult<()> {
+        write_json_atomic(&self.root.join("state.json"), state)
+    }
+
+    pub fn list_profiles(&self) -> AppResult<Vec<ProfileRecord>> {
+        let mut profiles: Vec<ProfileRecord> = Vec::new();
+        for entry in fs::read_dir(self.root.join("profiles"))? {
+            let entry = entry?;
+            if !entry.file_type()?.is_dir() {
+                continue;
+            }
+            let metadata = entry.path().join("metadata.json");
+            if metadata.exists() {
+                profiles.push(read_json(&metadata)?);
+            }
+        }
+        profiles.sort_by_key(|profile| std::cmp::Reverse(profile.updated_at));
+        Ok(profiles)
+    }
+
+    pub fn create_profile(
+        &self,
+        display_name: String,
+        source: ProfileSource,
+    ) -> AppResult<ProfileRecord> {
+        let display_name = display_name.trim();
+        if display_name.is_empty() {
+            return Err(AppError::InvalidInput("配置名称为空".to_string()));
+        }
+        let profile = ProfileRecord::new(display_name.chars().take(128).collect(), source);
+        let directory = self.profile_dir(profile.id);
+        let revisions = directory.join("revisions");
+        fs::create_dir_all(&revisions)?;
+        set_private_directory_permissions(&directory)?;
+        set_private_directory_permissions(&revisions)?;
+        self.save_profile(&profile)?;
+        Ok(profile)
+    }
+
+    pub fn load_profile(&self, profile_id: Uuid) -> AppResult<ProfileRecord> {
+        let path = self.profile_dir(profile_id).join("metadata.json");
+        if !path.exists() {
+            return Err(AppError::NotFound(format!("profile {profile_id}")));
+        }
+        read_json(&path)
+    }
+
+    pub fn save_profile(&self, profile: &ProfileRecord) -> AppResult<()> {
+        write_json_atomic(&self.profile_dir(profile.id).join("metadata.json"), profile)
+    }
+
+    pub fn delete_profile(&self, profile_id: Uuid) -> AppResult<()> {
+        let state = self.state()?;
+        if state.active_profile_id == Some(profile_id) {
+            return Err(AppError::Conflict("正在使用的配置不能删除".to_string()));
+        }
+        let directory = self.profile_dir(profile_id);
+        if !directory.exists() {
+            return Err(AppError::NotFound(format!("profile {profile_id}")));
+        }
+        fs::remove_dir_all(directory)?;
+        Ok(())
+    }
+
+    pub fn save_revision(
+        &self,
+        profile_id: Uuid,
+        source: &str,
+        effective: &str,
+        subscription: Option<SubscriptionMetadata>,
+        validation: ValidationReport,
+        openai_policy: OpenAiPolicy,
+    ) -> AppResult<ConfigRevision> {
+        let _profile = self.load_profile(profile_id)?;
+        let revision = ConfigRevision {
+            schema_version: CURRENT_SCHEMA_VERSION,
+            id: Uuid::new_v4(),
+            profile_id,
+            source_sha256: digest(source.as_bytes()),
+            effective_sha256: digest(effective.as_bytes()),
+            fetched_at: Utc::now(),
+            subscription,
+            validation,
+            openai_policy,
+        };
+        let directory = self.revision_dir(profile_id, revision.id);
+        fs::create_dir_all(&directory)?;
+        set_private_directory_permissions(&directory)?;
+        write_private_atomic(&directory.join("source.yaml"), source.as_bytes())?;
+        write_private_atomic(&directory.join("effective.yaml"), effective.as_bytes())?;
+        write_json_atomic(&directory.join("validation.json"), &revision)?;
+        Ok(revision)
+    }
+
+    pub fn list_revisions(&self, profile_id: Uuid) -> AppResult<Vec<ConfigRevision>> {
+        let revisions_dir = self.profile_dir(profile_id).join("revisions");
+        if !revisions_dir.exists() {
+            return Ok(Vec::new());
+        }
+        let mut revisions: Vec<ConfigRevision> = Vec::new();
+        for entry in fs::read_dir(revisions_dir)? {
+            let path = entry?.path().join("validation.json");
+            if path.exists() {
+                revisions.push(read_json(&path)?);
+            }
+        }
+        revisions.sort_by_key(|revision| std::cmp::Reverse(revision.fetched_at));
+        Ok(revisions)
+    }
+
+    pub fn load_revision_source(&self, profile_id: Uuid, revision_id: Uuid) -> AppResult<String> {
+        self.read_revision_file(profile_id, revision_id, "source.yaml")
+    }
+
+    pub fn load_revision(&self, profile_id: Uuid, revision_id: Uuid) -> AppResult<ConfigRevision> {
+        let path = self
+            .revision_dir(profile_id, revision_id)
+            .join("validation.json");
+        if !path.exists() {
+            return Err(AppError::NotFound(format!(
+                "revision {revision_id} for profile {profile_id}"
+            )));
+        }
+        read_json(&path)
+    }
+
+    pub fn load_revision_effective(
+        &self,
+        profile_id: Uuid,
+        revision_id: Uuid,
+    ) -> AppResult<String> {
+        self.read_revision_file(profile_id, revision_id, "effective.yaml")
+    }
+
+    pub fn activate_revision(
+        &self,
+        profile_id: Uuid,
+        revision_id: Uuid,
+    ) -> AppResult<ProfileRecord> {
+        self.select_revision(profile_id, revision_id, true)
+    }
+
+    pub fn update_profile_revision(
+        &self,
+        profile_id: Uuid,
+        revision_id: Uuid,
+    ) -> AppResult<ProfileRecord> {
+        self.select_revision(profile_id, revision_id, false)
+    }
+
+    fn select_revision(
+        &self,
+        profile_id: Uuid,
+        revision_id: Uuid,
+        activate_app: bool,
+    ) -> AppResult<ProfileRecord> {
+        let effective = self.load_revision_effective(profile_id, revision_id)?;
+        let revision = self.load_revision(profile_id, revision_id)?;
+        let mut profile = self.load_profile(profile_id)?;
+        if profile.active_revision_id != Some(revision_id) {
+            profile.last_known_good_revision_id = profile.active_revision_id;
+            profile.active_revision_id = Some(revision_id);
+            profile.updated_at = Utc::now();
+        }
+        profile.schema_version = CURRENT_SCHEMA_VERSION;
+        profile.openai_policy = revision.openai_policy;
+        self.save_profile(&profile)?;
+        if !activate_app {
+            return Ok(profile);
+        }
+        write_private_atomic(
+            &self.root.join("runtime").join("active.yaml"),
+            effective.as_bytes(),
+        )?;
+
+        let mut state = self.state()?;
+        state.schema_version = CURRENT_SCHEMA_VERSION;
+        state.active_profile_id = Some(profile_id);
+        state.active_revision_id = Some(revision_id);
+        state.updated_at = Some(Utc::now());
+        self.save_state(&state)?;
+        Ok(profile)
+    }
+
+    pub fn rollback_profile(&self, profile_id: Uuid) -> AppResult<ProfileRecord> {
+        let profile = self.load_profile(profile_id)?;
+        let revision_id = profile
+            .last_known_good_revision_id
+            .ok_or_else(|| AppError::Conflict("没有可回滚的稳定版本".to_string()))?;
+        self.activate_revision(profile_id, revision_id)
+    }
+
+    #[cfg(test)]
+    pub fn active_effective_config(&self) -> AppResult<String> {
+        let path = self.root.join("runtime").join("active.yaml");
+        if !path.exists() {
+            return Err(AppError::NotFound("active configuration".to_string()));
+        }
+        fs::read_to_string(path).map_err(AppError::from)
+    }
+
+    pub fn mark_clean_shutdown(&self, clean: bool) -> AppResult<()> {
+        let mut state = self.state()?;
+        state.clean_shutdown = clean;
+        state.updated_at = Some(Utc::now());
+        self.save_state(&state)
+    }
+
+    fn ensure_layout(&self) -> AppResult<()> {
+        for directory in ["profiles", "runtime", "logs", "diagnostics"] {
+            let path = self.root.join(directory);
+            fs::create_dir_all(&path)?;
+            set_private_directory_permissions(&path)?;
+        }
+        let permission_marker = self.root.join(".permissions-v1");
+        if !permission_marker.exists() {
+            secure_existing_tree(&self.root)?;
+            write_private_atomic(&permission_marker, b"ok\n")?;
+        }
+        Ok(())
+    }
+
+    fn profile_dir(&self, profile_id: Uuid) -> PathBuf {
+        self.root.join("profiles").join(profile_id.to_string())
+    }
+
+    fn revision_dir(&self, profile_id: Uuid, revision_id: Uuid) -> PathBuf {
+        self.profile_dir(profile_id)
+            .join("revisions")
+            .join(revision_id.to_string())
+    }
+
+    fn read_revision_file(
+        &self,
+        profile_id: Uuid,
+        revision_id: Uuid,
+        filename: &str,
+    ) -> AppResult<String> {
+        let path = self.revision_dir(profile_id, revision_id).join(filename);
+        if !path.exists() {
+            return Err(AppError::NotFound(format!(
+                "revision {revision_id} for profile {profile_id}"
+            )));
+        }
+        fs::read_to_string(path).map_err(AppError::from)
+    }
+}
+
+fn digest(bytes: &[u8]) -> String {
+    format!("{:x}", Sha256::digest(bytes))
+}
+
+fn read_json<T: DeserializeOwned>(path: &Path) -> AppResult<T> {
+    let content = fs::read(path)?;
+    serde_json::from_slice(&content).map_err(|error| AppError::Io(error.to_string()))
+}
+
+fn write_json_atomic<T: Serialize>(path: &Path, value: &T) -> AppResult<()> {
+    let content =
+        serde_json::to_vec_pretty(value).map_err(|error| AppError::Io(error.to_string()))?;
+    write_private_atomic(path, &content)
+}
+
+fn write_private_atomic(path: &Path, bytes: &[u8]) -> AppResult<()> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| AppError::Io("文件没有父目录".to_string()))?;
+    fs::create_dir_all(parent)?;
+    let temp = parent.join(format!(
+        ".{}.{}.tmp",
+        path.file_name().unwrap_or_default().to_string_lossy(),
+        Uuid::new_v4()
+    ));
+    let backup = parent.join(format!(
+        ".{}.backup",
+        path.file_name().unwrap_or_default().to_string_lossy()
+    ));
+    {
+        let mut file = fs::File::create(&temp)?;
+        file.write_all(bytes)?;
+        file.sync_all()?;
+    }
+    set_private_file_permissions(&temp)?;
+    if path.exists() {
+        if backup.exists() {
+            fs::remove_file(&backup)?;
+        }
+        fs::rename(path, &backup)?;
+    }
+    if let Err(error) = fs::rename(&temp, path) {
+        if backup.exists() {
+            let _ = fs::rename(&backup, path);
+        }
+        return Err(AppError::Io(error.to_string()));
+    }
+    if backup.exists() {
+        fs::remove_file(backup)?;
+    }
+    Ok(())
+}
+
+fn set_private_file_permissions(path: &Path) -> AppResult<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;
+    }
+    Ok(())
+}
+
+fn set_private_directory_permissions(path: &Path) -> AppResult<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(path, fs::Permissions::from_mode(0o700))?;
+    }
+    Ok(())
+}
+
+fn secure_existing_tree(path: &Path) -> AppResult<()> {
+    let metadata = fs::symlink_metadata(path)?;
+    if metadata.file_type().is_symlink() {
+        return Ok(());
+    }
+    if metadata.is_dir() {
+        set_private_directory_permissions(path)?;
+        for entry in fs::read_dir(path)? {
+            secure_existing_tree(&entry?.path())?;
+        }
+    } else if metadata.is_file() {
+        set_private_file_permissions(path)?;
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::AppStorage;
+    use crate::models::{OpenAiPolicy, ProfileSource, ValidationReport};
+    use std::fs;
+    use uuid::Uuid;
+
+    fn temp_root() -> std::path::PathBuf {
+        std::env::temp_dir().join(format!("mihomo-codex-storage-{}", Uuid::new_v4()))
+    }
+
+    #[test]
+    fn stores_versions_and_rolls_back() {
+        let root = temp_root();
+        let storage = AppStorage::from_root(root.clone()).expect("storage");
+        let profile = storage
+            .create_profile(
+                "测试配置".to_string(),
+                ProfileSource::Inline {
+                    label: "fixture".to_string(),
+                },
+            )
+            .expect("create");
+        let first = storage
+            .save_revision(
+                profile.id,
+                "source: one",
+                "effective: one",
+                None,
+                ValidationReport {
+                    valid: true,
+                    ..Default::default()
+                },
+                Default::default(),
+            )
+            .expect("first revision");
+        storage
+            .activate_revision(profile.id, first.id)
+            .expect("activate first");
+        let second = storage
+            .save_revision(
+                profile.id,
+                "source: two",
+                "effective: two",
+                None,
+                ValidationReport {
+                    valid: true,
+                    ..Default::default()
+                },
+                OpenAiPolicy {
+                    enabled: true,
+                    ..Default::default()
+                },
+            )
+            .expect("second revision");
+        storage
+            .activate_revision(profile.id, second.id)
+            .expect("activate second");
+        storage.rollback_profile(profile.id).expect("rollback");
+        assert_eq!(
+            storage.active_effective_config().expect("active"),
+            "effective: one"
+        );
+        assert!(
+            !storage
+                .load_profile(profile.id)
+                .expect("profile")
+                .openai_policy
+                .enabled
+        );
+
+        let backup = storage
+            .create_profile(
+                "备用订阅".to_string(),
+                ProfileSource::Inline {
+                    label: "backup".to_string(),
+                },
+            )
+            .expect("create backup");
+        let backup_revision = storage
+            .save_revision(
+                backup.id,
+                "source: backup",
+                "effective: backup",
+                None,
+                ValidationReport {
+                    valid: true,
+                    ..Default::default()
+                },
+                OpenAiPolicy {
+                    enabled: true,
+                    auto_maintain: true,
+                    ..Default::default()
+                },
+            )
+            .expect("backup revision");
+        storage
+            .update_profile_revision(backup.id, backup_revision.id)
+            .expect("update backup revision");
+        assert_eq!(
+            storage.state().expect("state").active_profile_id,
+            Some(profile.id)
+        );
+        assert_eq!(
+            storage.active_effective_config().expect("active"),
+            "effective: one"
+        );
+        assert_eq!(
+            storage
+                .load_profile(backup.id)
+                .expect("backup profile")
+                .active_revision_id,
+            Some(backup_revision.id)
+        );
+        assert!(
+            storage
+                .load_profile(backup.id)
+                .expect("backup profile")
+                .openai_policy
+                .enabled
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+}

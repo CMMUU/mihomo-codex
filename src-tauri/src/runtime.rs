@@ -1,0 +1,687 @@
+use crate::error::{AppError, AppResult};
+use crate::models::RuntimePhase;
+use crate::tun_service;
+use chrono::{DateTime, Utc};
+use rand::RngCore;
+use regex::Regex;
+use serde::Serialize;
+use std::collections::VecDeque;
+use std::env;
+use std::fs;
+use std::io::{BufRead, BufReader};
+use std::net::TcpListener;
+use std::path::{Path, PathBuf};
+use std::process::{Child, Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
+use tauri::{AppHandle, Manager};
+
+const MAX_LOG_LINES: usize = 2_000;
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BinaryInfo {
+    pub available: bool,
+    pub path: Option<String>,
+    pub version: Option<String>,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RuntimeLog {
+    pub timestamp: DateTime<Utc>,
+    pub level: String,
+    pub source: String,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RuntimeStatus {
+    pub state: String,
+    pub phase: RuntimePhase,
+    pub binary_available: bool,
+    pub binary_path: Option<String>,
+    pub version: Option<String>,
+    pub config_path: Option<String>,
+    pub message: String,
+    pub pid: Option<u32>,
+    pub started_at: Option<DateTime<Utc>>,
+    pub last_error: Option<String>,
+}
+
+#[derive(Default)]
+pub struct MihomoRuntime {
+    child: Mutex<Option<Child>>,
+    phase: Mutex<RuntimePhase>,
+    binary_path: Mutex<Option<PathBuf>>,
+    binary_version: Mutex<Option<String>>,
+    config_path: Mutex<Option<PathBuf>>,
+    started_at: Mutex<Option<DateTime<Utc>>>,
+    last_error: Mutex<Option<String>>,
+    logs: Arc<Mutex<VecDeque<RuntimeLog>>>,
+    tun_lease: Mutex<Option<String>>,
+    tun_pid: Mutex<Option<u32>>,
+    tun_heartbeat_stop: Mutex<Option<Arc<AtomicBool>>>,
+    tun_heartbeat_error: Arc<Mutex<Option<String>>>,
+}
+
+impl MihomoRuntime {
+    pub fn start(&self, app: &AppHandle, source: &str) -> AppResult<RuntimeStatus> {
+        if self.is_running()? {
+            return Err(AppError::Conflict("Mihomo 已经在运行".to_string()));
+        }
+        self.set_phase(RuntimePhase::Validating);
+        let binary = resolve_binary(Some(app))
+            .ok_or_else(|| AppError::Runtime("未找到 Mihomo sidecar".to_string()))?;
+        preflight_ports(source)?;
+        let profile_dir = runtime_directory(app)?;
+        let config_path = profile_dir.join("active.yaml");
+        write_private_file(&config_path, source.as_bytes())?;
+        validate_file(&binary, &profile_dir, &config_path)?;
+
+        self.set_phase(RuntimePhase::Starting);
+        let version = binary_version(&binary).ok();
+        let mut command = Command::new(&binary);
+        command
+            .arg("-d")
+            .arg(&profile_dir)
+            .arg("-f")
+            .arg(&config_path)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let mut child = command
+            .spawn()
+            .map_err(|error| AppError::Runtime(error.to_string()))?;
+        if let Some(stdout) = child.stdout.take() {
+            spawn_log_reader(self.logs.clone(), "stdout", stdout);
+        }
+        if let Some(stderr) = child.stderr.take() {
+            spawn_log_reader(self.logs.clone(), "stderr", stderr);
+        }
+        let pid = child.id();
+        *lock(&self.child, "child")? = Some(child);
+        *lock(&self.binary_path, "binary path")? = Some(binary);
+        *lock(&self.binary_version, "binary version")? = version;
+        *lock(&self.config_path, "config path")? = Some(config_path);
+        *lock(&self.started_at, "started at")? = Some(Utc::now());
+        *lock(&self.last_error, "last error")? = None;
+        self.set_phase(RuntimePhase::Running);
+        self.push_log("info", "runtime", format!("Mihomo started with pid {pid}"));
+        Ok(self.status(Some(app)))
+    }
+
+    pub fn start_tun(&self, app: &AppHandle, source: &str) -> AppResult<RuntimeStatus> {
+        if self.is_running()? {
+            return Err(AppError::Conflict("Mihomo 已经在运行".to_string()));
+        }
+        let helper = tun_service::status();
+        if !helper.ready() {
+            return Err(AppError::Platform(helper.message));
+        }
+        self.set_phase(RuntimePhase::Validating);
+        preflight_ports(source)?;
+        validate_source(app, source)?;
+        self.set_phase(RuntimePhase::Starting);
+
+        let mut lease_bytes = [0_u8; 32];
+        rand::rng().fill_bytes(&mut lease_bytes);
+        let lease = lease_bytes
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        let started = tun_service::start(source, &lease)?;
+        let config_path = PathBuf::from(&started.config_path);
+        let binary_path = config_path.parent().map(|parent| parent.join("mihomo"));
+
+        *lock(&self.tun_lease, "tun lease")? = Some(lease.clone());
+        *lock(&self.tun_pid, "tun pid")? = Some(started.pid);
+        *lock(&self.binary_path, "binary path")? = binary_path;
+        *lock(&self.binary_version, "binary version")? = started.version;
+        *lock(&self.config_path, "config path")? = Some(config_path);
+        *lock(&self.started_at, "started at")? = Some(Utc::now());
+        *lock(&self.last_error, "last error")? = None;
+        if let Ok(mut error) = self.tun_heartbeat_error.lock() {
+            *error = None;
+        }
+        self.start_tun_heartbeat(lease);
+        self.set_phase(RuntimePhase::Running);
+        self.push_log(
+            "info",
+            "runtime",
+            format!("Privileged TUN Mihomo started with pid {}", started.pid),
+        );
+        Ok(self.status(Some(app)))
+    }
+
+    pub fn stop(&self, app: Option<&AppHandle>) -> AppResult<RuntimeStatus> {
+        self.set_phase(RuntimePhase::Stopping);
+        self.stop_tun_heartbeat();
+        let had_tun = lock(&self.tun_lease, "tun lease")?.take().is_some();
+        let tun_stop_result = if had_tun { tun_service::stop() } else { Ok(()) };
+        *lock(&self.tun_pid, "tun pid")? = None;
+        if let Ok(mut error) = self.tun_heartbeat_error.lock() {
+            *error = None;
+        }
+        {
+            let mut child_guard = lock(&self.child, "child")?;
+            if let Some(child) = child_guard.as_mut() {
+                let pid = child.id();
+                let _ = child.kill();
+                let _ = child.wait();
+                self.push_log("info", "runtime", format!("Mihomo stopped with pid {pid}"));
+            }
+            *child_guard = None;
+        }
+        *lock(&self.started_at, "started at")? = None;
+        self.set_phase(RuntimePhase::Stopped);
+        let status = self.status(app);
+        tun_stop_result?;
+        Ok(status)
+    }
+
+    pub fn status(&self, app: Option<&AppHandle>) -> RuntimeStatus {
+        let mut phase = self
+            .phase
+            .lock()
+            .map(|value| *value)
+            .unwrap_or(RuntimePhase::Crashed);
+        let mut pid = None;
+        if let Ok(mut child_guard) = self.child.lock() {
+            if let Some(child) = child_guard.as_mut() {
+                pid = Some(child.id());
+                match child.try_wait() {
+                    Ok(Some(exit)) => {
+                        let message = format!("Mihomo exited with {exit}");
+                        if let Ok(mut error) = self.last_error.lock() {
+                            *error = Some(message.clone());
+                        }
+                        self.push_log("error", "runtime", message);
+                        *child_guard = None;
+                        phase = RuntimePhase::Crashed;
+                        self.set_phase(phase);
+                        pid = None;
+                    }
+                    Ok(None) => {
+                        phase = RuntimePhase::Running;
+                    }
+                    Err(error) => {
+                        if let Ok(mut last_error) = self.last_error.lock() {
+                            *last_error = Some(error.to_string());
+                        }
+                        phase = RuntimePhase::Crashed;
+                        self.set_phase(phase);
+                    }
+                }
+            }
+        }
+
+        let tun_active = self
+            .tun_lease
+            .lock()
+            .ok()
+            .is_some_and(|lease| lease.is_some());
+        if tun_active {
+            pid = self.tun_pid.lock().ok().and_then(|value| *value);
+            let heartbeat_error = self
+                .tun_heartbeat_error
+                .lock()
+                .ok()
+                .and_then(|value| value.clone());
+            if let Some(error) = heartbeat_error {
+                if let Ok(mut last_error) = self.last_error.lock() {
+                    *last_error = Some(error);
+                }
+                phase = RuntimePhase::Crashed;
+                self.set_phase(phase);
+            } else {
+                phase = RuntimePhase::Running;
+            }
+        }
+
+        let binary_info = probe_binary(app);
+        let binary_path = self
+            .binary_path
+            .lock()
+            .ok()
+            .and_then(|value| value.as_ref().map(|path| path.display().to_string()))
+            .or(binary_info.path.clone());
+        let version = self
+            .binary_version
+            .lock()
+            .ok()
+            .and_then(|value| value.clone())
+            .or(binary_info.version.clone());
+        let config_path = self
+            .config_path
+            .lock()
+            .ok()
+            .and_then(|value| value.as_ref().map(|path| path.display().to_string()));
+        let started_at = self.started_at.lock().ok().and_then(|value| *value);
+        let last_error = self.last_error.lock().ok().and_then(|value| value.clone());
+
+        let message = match phase {
+            RuntimePhase::Running => "Mihomo 正在运行".to_string(),
+            RuntimePhase::Validating => "正在校验配置".to_string(),
+            RuntimePhase::Starting => "正在启动 Mihomo".to_string(),
+            RuntimePhase::Stopping => "正在停止 Mihomo".to_string(),
+            RuntimePhase::Crashed => last_error
+                .clone()
+                .unwrap_or_else(|| "Mihomo 异常退出".to_string()),
+            _ if binary_info.available => "Mihomo 已停止".to_string(),
+            _ => binary_info.message.clone(),
+        };
+        RuntimeStatus {
+            state: if phase == RuntimePhase::Running {
+                "running"
+            } else {
+                "stopped"
+            }
+            .to_string(),
+            phase,
+            binary_available: binary_info.available,
+            binary_path,
+            version,
+            config_path,
+            message,
+            pid,
+            started_at,
+            last_error,
+        }
+    }
+
+    pub fn logs(&self, limit: usize) -> Vec<RuntimeLog> {
+        let limit = limit.clamp(1, MAX_LOG_LINES);
+        let mut logs: Vec<RuntimeLog> = self
+            .logs
+            .lock()
+            .map(|logs| {
+                logs.iter()
+                    .rev()
+                    .take(limit)
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .into_iter()
+                    .rev()
+                    .collect()
+            })
+            .unwrap_or_default();
+        let include_tun = self
+            .tun_lease
+            .lock()
+            .ok()
+            .is_some_and(|lease| lease.is_some())
+            || self.tun_pid.lock().ok().is_some_and(|pid| pid.is_some());
+        if include_tun {
+            logs.extend(tun_service::logs(limit).into_iter().map(|log| RuntimeLog {
+                timestamp: log.timestamp,
+                level: log.level,
+                source: format!("tun-helper/{}", log.source),
+                message: log.message,
+            }));
+            logs.sort_by_key(|log| log.timestamp);
+            if logs.len() > limit {
+                logs.drain(..logs.len() - limit);
+            }
+        }
+        logs
+    }
+
+    pub fn clear_logs(&self) {
+        if let Ok(mut logs) = self.logs.lock() {
+            logs.clear();
+        }
+    }
+
+    fn is_running(&self) -> AppResult<bool> {
+        if lock(&self.tun_lease, "tun lease")?.is_some()
+            && self
+                .tun_heartbeat_error
+                .lock()
+                .map_err(|_| AppError::Runtime("tun heartbeat lock poisoned".to_string()))?
+                .is_none()
+        {
+            return Ok(true);
+        }
+        let mut child_guard = lock(&self.child, "child")?;
+        match child_guard.as_mut() {
+            Some(child) => match child
+                .try_wait()
+                .map_err(|error| AppError::Runtime(error.to_string()))?
+            {
+                Some(exit) => {
+                    *child_guard = None;
+                    self.set_phase(RuntimePhase::Crashed);
+                    *lock(&self.last_error, "last error")? =
+                        Some(format!("Mihomo exited with {exit}"));
+                    Ok(false)
+                }
+                None => Ok(true),
+            },
+            None => Ok(false),
+        }
+    }
+
+    fn set_phase(&self, phase: RuntimePhase) {
+        if let Ok(mut value) = self.phase.lock() {
+            *value = phase;
+        }
+    }
+
+    fn push_log(&self, level: &str, source: &str, message: String) {
+        push_log(&self.logs, level, source, message);
+    }
+
+    fn start_tun_heartbeat(&self, lease: String) {
+        self.stop_tun_heartbeat();
+        let stop = Arc::new(AtomicBool::new(false));
+        if let Ok(mut guard) = self.tun_heartbeat_stop.lock() {
+            *guard = Some(stop.clone());
+        }
+        let error_slot = self.tun_heartbeat_error.clone();
+        std::thread::spawn(move || {
+            let mut failures = 0_u8;
+            while !stop.load(Ordering::Acquire) {
+                std::thread::sleep(std::time::Duration::from_secs(4));
+                if stop.load(Ordering::Acquire) {
+                    break;
+                }
+                match tun_service::heartbeat(&lease) {
+                    Ok(()) => failures = 0,
+                    Err(error) => {
+                        failures = failures.saturating_add(1);
+                        if failures >= 3 {
+                            if let Ok(mut slot) = error_slot.lock() {
+                                *slot = Some(format!("TUN Helper 心跳失败：{error}"));
+                            }
+                            let _ = tun_service::stop();
+                            break;
+                        }
+                    }
+                }
+            }
+        });
+    }
+
+    fn stop_tun_heartbeat(&self) {
+        if let Ok(mut guard) = self.tun_heartbeat_stop.lock() {
+            if let Some(stop) = guard.take() {
+                stop.store(true, Ordering::Release);
+            }
+        }
+    }
+}
+
+pub fn probe_binary(app: Option<&AppHandle>) -> BinaryInfo {
+    let Some(path) = resolve_binary(app) else {
+        return BinaryInfo {
+            available: false,
+            path: None,
+            version: None,
+            message: "未找到 Mihomo sidecar".to_string(),
+        };
+    };
+    match binary_version(&path) {
+        Ok(version) => BinaryInfo {
+            available: true,
+            path: Some(path.display().to_string()),
+            version: Some(version),
+            message: "已找到 Mihomo 内核".to_string(),
+        },
+        Err(error) => BinaryInfo {
+            available: false,
+            path: Some(path.display().to_string()),
+            version: None,
+            message: error.to_string(),
+        },
+    }
+}
+
+pub fn validate_source(app: &AppHandle, source: &str) -> AppResult<()> {
+    let binary = resolve_binary(Some(app))
+        .ok_or_else(|| AppError::Runtime("未找到 Mihomo sidecar".to_string()))?;
+    let profile_dir = runtime_directory(app)?;
+    let candidate = profile_dir.join("candidate.yaml");
+    write_private_file(&candidate, source.as_bytes())?;
+    let result = validate_file(&binary, &profile_dir, &candidate);
+    let _ = fs::remove_file(candidate);
+    result
+}
+
+fn runtime_directory(app: &AppHandle) -> AppResult<PathBuf> {
+    let directory = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| AppError::Io(error.to_string()))?
+        .join("runtime");
+    fs::create_dir_all(&directory)?;
+    set_private_directory_permissions(&directory)?;
+    Ok(directory)
+}
+
+pub(crate) fn validate_file(binary: &Path, data_dir: &Path, config_path: &Path) -> AppResult<()> {
+    let output = Command::new(binary)
+        .arg("-t")
+        .arg("-d")
+        .arg(data_dir)
+        .arg("-f")
+        .arg(config_path)
+        .output()
+        .map_err(|error| AppError::Runtime(error.to_string()))?;
+    if output.status.success() {
+        return Ok(());
+    }
+    let detail = first_non_empty_line(&output.stderr)
+        .or_else(|| first_non_empty_line(&output.stdout))
+        .unwrap_or_else(|| "配置校验失败".to_string());
+    Err(AppError::Config(redact(&detail)))
+}
+
+fn preflight_ports(source: &str) -> AppResult<()> {
+    let document: serde_yaml::Value =
+        serde_yaml::from_str(source).map_err(|error| AppError::Config(error.to_string()))?;
+    let root = document
+        .as_mapping()
+        .ok_or_else(|| AppError::Config("配置根节点必须是 YAML 对象".to_string()))?;
+    let mixed_port = root
+        .get(serde_yaml::Value::String("mixed-port".to_string()))
+        .and_then(serde_yaml::Value::as_u64)
+        .and_then(|value| u16::try_from(value).ok());
+    let controller_port = root
+        .get(serde_yaml::Value::String("external-controller".to_string()))
+        .and_then(serde_yaml::Value::as_str)
+        .and_then(|value| value.rsplit_once(':'))
+        .and_then(|(_, port)| port.parse::<u16>().ok());
+    for (label, port) in [
+        ("mixed port", mixed_port),
+        ("controller port", controller_port),
+    ] {
+        if let Some(port) = port {
+            TcpListener::bind(("127.0.0.1", port))
+                .map_err(|error| AppError::Runtime(format!("{label} {port} 不可用: {error}")))?;
+        }
+    }
+    Ok(())
+}
+
+fn binary_version(path: &Path) -> AppResult<String> {
+    let output = Command::new(path)
+        .arg("-v")
+        .output()
+        .map_err(|error| AppError::Runtime(error.to_string()))?;
+    if !output.status.success() {
+        return Err(AppError::Runtime(
+            first_non_empty_line(&output.stderr).unwrap_or_else(|| "Mihomo 无法执行".to_string()),
+        ));
+    }
+    first_non_empty_line(&output.stdout)
+        .or_else(|| first_non_empty_line(&output.stderr))
+        .ok_or_else(|| AppError::Runtime("Mihomo 未返回版本信息".to_string()))
+}
+
+pub(crate) fn resolve_binary(app: Option<&AppHandle>) -> Option<PathBuf> {
+    if let Ok(value) = env::var("MIHOMO_BIN") {
+        let path = PathBuf::from(value);
+        if is_executable_file(&path) {
+            return Some(path);
+        }
+    }
+    if let Some(app) = app {
+        if let Ok(resource_dir) = app.path().resource_dir() {
+            for candidate in binary_candidates(&resource_dir) {
+                if is_executable_file(&candidate) {
+                    return Some(candidate);
+                }
+            }
+        }
+    }
+    if let Some(directory) = env::current_exe()
+        .ok()
+        .and_then(|path| path.parent().map(Path::to_path_buf))
+    {
+        for candidate in binary_candidates(&directory) {
+            if is_executable_file(&candidate) {
+                return Some(candidate);
+            }
+        }
+    }
+    let path_variable = env::var_os("PATH")?;
+    for directory in env::split_paths(&path_variable) {
+        for candidate in binary_candidates(&directory) {
+            if is_executable_file(&candidate) {
+                return Some(candidate);
+            }
+        }
+    }
+    None
+}
+
+fn binary_candidates(directory: &Path) -> Vec<PathBuf> {
+    if cfg!(windows) {
+        vec![directory.join("mihomo.exe"), directory.join("mihomo")]
+    } else {
+        vec![directory.join("mihomo")]
+    }
+}
+
+fn spawn_log_reader<R>(logs: Arc<Mutex<VecDeque<RuntimeLog>>>, source: &'static str, reader: R)
+where
+    R: std::io::Read + Send + 'static,
+{
+    std::thread::spawn(move || {
+        for line in BufReader::new(reader).lines().map_while(Result::ok) {
+            let level = if line.contains("level=error") || line.contains("level=fatal") {
+                "error"
+            } else if line.contains("level=warn") {
+                "warn"
+            } else {
+                "info"
+            };
+            push_log(&logs, level, source, line);
+        }
+    });
+}
+
+fn push_log(logs: &Arc<Mutex<VecDeque<RuntimeLog>>>, level: &str, source: &str, message: String) {
+    if let Ok(mut lines) = logs.lock() {
+        lines.push_back(RuntimeLog {
+            timestamp: Utc::now(),
+            level: level.to_string(),
+            source: source.to_string(),
+            message: redact(&message),
+        });
+        while lines.len() > MAX_LOG_LINES {
+            lines.pop_front();
+        }
+    }
+}
+
+pub(crate) fn redact(value: &str) -> String {
+    static URL_QUERY: OnceLock<Regex> = OnceLock::new();
+    static UUID: OnceLock<Regex> = OnceLock::new();
+    static SECRET_FIELD: OnceLock<Regex> = OnceLock::new();
+    let value = URL_QUERY
+        .get_or_init(|| Regex::new(r"(https?://[^\s?]+)\?[^\s]+").expect("valid regex"))
+        .replace_all(value, "$1?[REDACTED]")
+        .to_string();
+    let value = UUID
+        .get_or_init(|| {
+            Regex::new(r"(?i)\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b")
+                .expect("valid regex")
+        })
+        .replace_all(&value, "[UUID]")
+        .to_string();
+    SECRET_FIELD
+        .get_or_init(|| {
+            Regex::new(r#"(?i)\b(token|secret|password|passwd|uuid)(\s*[:=]\s*["']?)[^\s"',}]+"#)
+                .expect("valid regex")
+        })
+        .replace_all(&value, "$1$2[REDACTED]")
+        .to_string()
+}
+
+fn is_executable_file(path: &Path) -> bool {
+    path.is_file()
+}
+
+fn first_non_empty_line(bytes: &[u8]) -> Option<String> {
+    String::from_utf8_lossy(bytes)
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .map(str::to_string)
+}
+
+pub(crate) fn write_private_file(path: &Path, bytes: &[u8]) -> AppResult<()> {
+    fs::write(path, bytes)?;
+    set_private_file_permissions(path)
+}
+
+fn set_private_file_permissions(path: &Path) -> AppResult<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;
+    }
+    Ok(())
+}
+
+pub(crate) fn set_private_directory_permissions(path: &Path) -> AppResult<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(path, fs::Permissions::from_mode(0o700))?;
+    }
+    Ok(())
+}
+
+fn lock<'a, T>(mutex: &'a Mutex<T>, label: &str) -> AppResult<std::sync::MutexGuard<'a, T>> {
+    mutex
+        .lock()
+        .map_err(|_| AppError::Runtime(format!("{label} state lock poisoned")))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{preflight_ports, redact};
+
+    #[test]
+    fn redacts_urls_and_uuids() {
+        let input = "https://example.com/sub?token=secret 123e4567-e89b-12d3-a456-426614174000";
+        let output = redact(input);
+        assert!(!output.contains("secret"));
+        assert!(!output.contains("123e4567"));
+        assert!(!redact("password: top-secret").contains("top-secret"));
+    }
+
+    #[test]
+    fn rejects_an_occupied_port() {
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("listener");
+        let port = listener.local_addr().expect("local address").port();
+        let source =
+            format!("mixed-port: {port}\nexternal-controller: 127.0.0.1:19090\nproxies: []\n");
+        assert!(preflight_ports(&source).is_err());
+    }
+}

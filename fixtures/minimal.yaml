@@ -1,0 +1,19 @@
+mixed-port: 17895
+external-controller: 127.0.0.1:19090
+secret: fixture-secret
+mode: rule
+allow-lan: false
+bind-address: 127.0.0.1
+proxies:
+  - name: fixture-direct
+    type: direct
+proxy-groups:
+  - name: PROXY
+    type: select
+    proxies:
+      - DIRECT
+rules:
+  - MATCH,DIRECT
+tun:
+  enable: false
+

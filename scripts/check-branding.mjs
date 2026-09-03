@@ -1,0 +1,41 @@
+import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+
+const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const read = (path) => readFileSync(join(root, path), "utf8");
+const json = (path) => JSON.parse(read(path));
+const name = "mihomo-codex";
+const identifier = "com.cmmuu.mihomodesktop";
+const pkg = json("package.json");
+const lock = json("package-lock.json");
+const config = json("src-tauri/tauri.conf.json");
+const cargo = read("src-tauri/Cargo.toml");
+const protocol = read("src-tauri/src/tun_service/protocol.rs");
+
+assert.equal(pkg.name, name);
+assert.equal(lock.name, name);
+assert.equal(lock.packages[""].name, name);
+assert.equal(lock.version, pkg.version);
+assert.equal(lock.packages[""].version, pkg.version);
+assert.equal(config.productName, name);
+assert.equal(config.mainBinaryName, name);
+assert.equal(config.version, pkg.version);
+assert.equal(config.identifier, identifier);
+assert.equal(config.app.windows.find((window) => window.label === "main").title, name);
+assert.ok(cargo.includes(`name = "${name}"`));
+assert.ok(cargo.includes(`default-run = "${name}"`));
+assert.ok(cargo.includes(`version = "${pkg.version}"`));
+assert.ok(cargo.includes('name = "mihomo_codex_lib"'));
+assert.ok(read("src-tauri/Cargo.lock").includes(`name = "${name}"\nversion = "${pkg.version}"`));
+assert.ok(read("src-tauri/src/main.rs").includes("mihomo_codex_lib::run()"));
+assert.ok(read("src-tauri/src/bin/mihomo-tun-helper.rs").includes("mihomo_codex_lib::tun_service::daemon::run()"));
+assert.ok(protocol.includes(`APP_BINARY_NAME: &str = "${name}"`));
+assert.ok(protocol.includes(`LABEL: &str = "${identifier}.tun-helper"`));
+assert.ok(protocol.includes('HELPER_BINARY_NAME: &str = "mihomo-tun-helper"'));
+assert.ok(read("index.html").includes(`<title>${name}</title>`));
+assert.ok(read("src/main.ts").includes(`<strong>${name}</strong>`));
+assert.ok(read(`src-tauri/helper/${identifier}.tun-helper.plist`).includes(`<string>${identifier}</string>`));
+
+console.log(`${name} ${pkg.version}: build names and retained compatibility identities match`);
