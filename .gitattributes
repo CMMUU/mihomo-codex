@@ -1,0 +1,8 @@
+# Keep source checks and pinned license bytes consistent on every platform.
+* text=auto eol=lf
+third-party/Mihomo-LICENSE.txt text eol=lf
+
+# Application artwork must never undergo text conversion.
+*.png binary
+*.ico binary
+*.icns binary
