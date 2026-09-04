@@ -74,6 +74,18 @@ def source_digest(asset):
     return value[7:].lower()
 
 
+def release_metadata_matches(actual, expected, keys):
+    for key in keys:
+        left, right = actual.get(key), expected[key]
+        if key == "body" and isinstance(left, str) and isinstance(right, str):
+            # Gitee's web editor returns CRLF; retain Markdown whitespace and
+            # the original source body when writing the API.
+            left, right = left.replace("\r\n", "\n"), right.replace("\r\n", "\n")
+        if left != right:
+            return False
+    return True
+
+
 def validate_pair(repo, source, target):
     if repo not in REPOS:
         raise SyncError("Repository is outside the permitted migration scope")
@@ -83,8 +95,9 @@ def validate_pair(repo, source, target):
             raise SyncError("Repository owner, name or visibility could not be confirmed")
     if str(source.get("full_name", "")).casefold() != f"{GH_OWNER}/{repo}".casefold():
         raise SyncError("GitHub source repository does not match the requested scope")
+    target_url = f"https://gitee.com/{GE_OWNER}/{repo}".casefold()
     if (str(target.get("path", "")).casefold() != repo.casefold()
-            or str(target.get("html_url", "")).rstrip("/").casefold() != f"https://gitee.com/{GE_OWNER}/{repo}".casefold()):
+            or str(target.get("html_url", "")).casefold() not in {target_url, target_url + ".git"}):
         raise SyncError("Gitee target path does not match the requested scope")
     if source["private"] and not target["private"]:
         raise SyncError("Private GitHub source must never synchronize to a public Gitee target")
@@ -484,7 +497,7 @@ class Sync:
             target = self.ge.request(self.target_path + "/releases", "POST", {**metadata, "prerelease": str(metadata["prerelease"]).lower()})
         else:
             target = matches[0]
-            if any(target.get(key) != metadata[key] for key in ("name", "body", "prerelease")):
+            if not release_metadata_matches(target, metadata, ("name", "body", "prerelease")):
                 target = self.ge.request(f"{self.target_path}/releases/{target['id']}", "PATCH",
                                          {key: str(value).lower() if type(value) is bool else value for key, value in metadata.items() if key != "target_commitish"})
         if type(target.get("id")) is not int or target.get("tag_name") != tag:
@@ -492,7 +505,7 @@ class Sync:
         for item in files:
             self.ensure_attachment(target["id"], item)
         confirmed = self.ge.request(f"{self.target_path}/releases/{target['id']}")
-        if any(confirmed.get(key) != metadata[key] for key in ("tag_name", "name", "body", "prerelease")):
+        if not release_metadata_matches(confirmed, metadata, ("tag_name", "name", "body", "prerelease")):
             raise SyncError("Gitee release metadata did not match after synchronization")
         print(f"Synchronized {self.repo}: {tag}, {len(files)} attachment(s)", flush=True)
 

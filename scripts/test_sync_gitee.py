@@ -85,6 +85,19 @@ class SyncTests(unittest.TestCase):
                     sync.validate_pair("mihomo-codex", source, target)
         sync.validate_pair("mihomo-codex", source, metadata(True))
 
+    def test_gitee_repository_url_accepts_only_exact_web_or_clone_url(self):
+        source = metadata(False, "CMMUU")
+        base = "https://gitee.com/cmmuu/mihomo-codex"
+        for url in (base, base + ".git"):
+            with self.subTest(url=url):
+                sync.validate_pair("mihomo-codex", source, {**metadata(), "html_url": url})
+        for url in (base + ".git.attacker", base + ".git/other", base + "/", base + "?other=repo",
+                    "https://gitee.com/cmmuu/other", "https://gitee.com/other/mihomo-codex",
+                    "https://gitee.com.attacker/cmmuu/mihomo-codex", base.replace("https:", "http:")):
+            with self.subTest(url=url):
+                with self.assertRaisesRegex(sync.SyncError, "target path"):
+                    sync.validate_pair("mihomo-codex", source, {**metadata(), "html_url": url})
+
     def test_public_repository_does_not_bypass_authenticated_owner_preflight(self):
         class GH:
             def request(self, path):
@@ -383,6 +396,69 @@ class SyncTests(unittest.TestCase):
         self.assertEqual(ge.release["name"], release["name"])
         self.assertEqual(ge.release["body"], release["body"])
         self.assertEqual(ge.release["target_commitish"], "a" * 40)
+
+
+    def release_metadata_job(self, source_body, existing_body=None, read_back_body=None):
+        source = {"id": 1, "tag_name": "v0.5.0", "name": "Release notes", "body": source_body,
+                  "prerelease": False, "draft": False}
+        class GE:
+            def __init__(self):
+                self.release = None if existing_body is None else {**source, "id": 12, "body": existing_body}
+                self.writes = []
+            def pages(self, path):
+                return [self.release] if self.release else []
+            def request(self, path, method="GET", data=None):
+                if method != "GET":
+                    self.writes.append((method, dict(data)))
+                    self.release = {**data, "id": 12, "prerelease": data["prerelease"] == "true"}
+                result = dict(self.release)
+                result["body"] = (read_back_body if read_back_body is not None else result["body"]).replace("\r\n", "\n").replace("\n", "\r\n")
+                return result
+        ge = GE()
+        job = sync.Sync("mihomo-codex", None, ge, self.fixture())
+        job.guard = lambda: None
+        job.source_assets = lambda release: []
+        return job, ge, source
+
+    def test_existing_release_with_crlf_body_is_reused_without_patch(self):
+        body = "First line  \nSecond line\n"
+        job, ge, source = self.release_metadata_job(body, body.replace("\n", "\r\n"))
+        with patch.object(sync, "git_run", return_value="a" * 40), patch("builtins.print"):
+            job.sync_release(source, job.work / "fixture.git")
+            job.sync_release(source, job.work / "fixture.git")
+        self.assertEqual(ge.writes, [])
+
+    def test_crlf_api_read_back_accepts_create_and_patch_without_changing_source_body(self):
+        for existing, method in ((None, "POST"), ("Old release notes", "PATCH")):
+            for body in ("First line  \nSecond line\n", "First line  \r\nSecond line\r\n"):
+                with self.subTest(method=method, body=body):
+                    job, ge, source = self.release_metadata_job(body, existing)
+                    with patch.object(sync, "git_run", return_value="a" * 40), patch("builtins.print"):
+                        job.sync_release(source, job.work / "fixture.git")
+                    self.assertEqual(len(ge.writes), 1)
+                    self.assertEqual(ge.writes[0][0], method)
+                    self.assertEqual(ge.writes[0][1]["body"], body)
+
+    def test_body_content_and_markdown_whitespace_changes_are_updated(self):
+        body = "First line  \nSecond line\n"
+        for changed in (body.replace("Second", "Different"), body.replace("  \n", "\n"), body.rstrip("\n")):
+            with self.subTest(changed=changed):
+                job, ge, source = self.release_metadata_job(body, changed)
+                with patch.object(sync, "git_run", return_value="a" * 40), patch("builtins.print"):
+                    job.sync_release(source, job.work / "fixture.git")
+                self.assertEqual(len(ge.writes), 1)
+                self.assertEqual(ge.writes[0][0], "PATCH")
+                self.assertEqual(ge.writes[0][1]["body"], body)
+
+    def test_read_back_still_rejects_changed_content_or_markdown_whitespace(self):
+        body = "First line  \nSecond line\n"
+        for changed in (body.replace("Second", "Different"), body.replace("  \n", "\n"), body.rstrip("\n")):
+            with self.subTest(changed=changed):
+                job, ge, source = self.release_metadata_job(body, body, changed)
+                with patch.object(sync, "git_run", return_value="a" * 40), patch("builtins.print"):
+                    with self.assertRaisesRegex(sync.SyncError, "metadata did not match"):
+                        job.sync_release(source, job.work / "fixture.git")
+                self.assertEqual(ge.writes, [])
 
 
 if __name__ == "__main__":
