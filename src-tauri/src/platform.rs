@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use tauri::{AppHandle, Manager};
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProxyProtocolState {
     pub enabled: bool,
@@ -15,7 +15,7 @@ pub struct ProxyProtocolState {
     pub port: u16,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MacServiceProxyState {
     pub service: String,
@@ -25,7 +25,7 @@ pub struct MacServiceProxyState {
     pub bypass_domains: Vec<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "platform", rename_all = "snake_case")]
 pub enum SystemProxySnapshot {
     Macos {
@@ -59,13 +59,47 @@ struct MacNetworkServiceEntry {
 }
 
 pub fn enable_system_proxy(app: &AppHandle, port: u16) -> AppResult<SystemProxyStatus> {
-    let snapshot_path = snapshot_path(app)?;
-    if !snapshot_path.exists() {
-        let snapshot = capture_system_proxy()?;
-        write_snapshot(&snapshot_path, &snapshot)?;
+    #[cfg(windows)]
+    {
+        let path = snapshot_path(app)?;
+        let current = capture_system_proxy()?;
+        let original = if path.exists() {
+            let saved: WindowsProxyLease = serde_json::from_slice(&fs::read(&path)?)
+                .map_err(|error| AppError::Platform(error.to_string()))?;
+            if saved.owns(&current, port) {
+                saved.original().clone()
+            } else {
+                current.clone()
+            }
+        } else {
+            current.clone()
+        };
+        let applied = windows_applied_proxy(&current, port);
+        // Save both sides before changing the registry, including interrupted writes.
+        let mut lease = WindowsProxyLease::Tracked {
+            original,
+            before: Some(current),
+            applied: applied.clone(),
+            committed: false,
+        };
+        write_snapshot(&path, &lease)?;
+        restore_snapshot(&applied)?;
+        if let WindowsProxyLease::Tracked { committed, .. } = &mut lease {
+            *committed = true;
+        }
+        write_snapshot(&path, &lease)?;
+        Ok(status(app))
     }
-    apply_system_proxy(port)?;
-    Ok(status(app))
+    #[cfg(not(windows))]
+    {
+        let snapshot_path = snapshot_path(app)?;
+        if !snapshot_path.exists() {
+            let snapshot = capture_system_proxy()?;
+            write_snapshot(&snapshot_path, &snapshot)?;
+        }
+        apply_system_proxy(port)?;
+        Ok(status(app))
+    }
 }
 
 pub fn verify_system_proxy(port: u16) -> AppResult<()> {
@@ -77,17 +111,58 @@ pub fn restore_system_proxy(app: &AppHandle) -> AppResult<SystemProxyStatus> {
     if !path.exists() {
         return Ok(status(app));
     }
-    let snapshot: SystemProxySnapshot = serde_json::from_slice(&fs::read(&path)?)
-        .map_err(|error| AppError::Platform(error.to_string()))?;
-    restore_snapshot(&snapshot)?;
+    #[cfg(not(windows))]
+    {
+        let snapshot: SystemProxySnapshot = serde_json::from_slice(&fs::read(&path)?)
+            .map_err(|error| AppError::Platform(error.to_string()))?;
+        restore_snapshot(&snapshot)?;
+    }
+    #[cfg(windows)]
+    {
+        let saved: WindowsProxyLease = serde_json::from_slice(&fs::read(&path)?)
+            .map_err(|error| AppError::Platform(error.to_string()))?;
+        let current = capture_system_proxy()?;
+        let port = crate::storage::AppStorage::from_app(app)?
+            .settings()?
+            .mixed_port;
+        if let Some(original) = saved.restoration(&current, port) {
+            // Recovery itself can be interrupted. Persist its transition before
+            // the first write so a later launch can finish either direction.
+            let restoring = WindowsProxyLease::Tracked {
+                original: original.clone(),
+                before: Some(current),
+                applied: original.clone(),
+                committed: false,
+            };
+            write_snapshot(&path, &restoring)?;
+            restore_snapshot(&original)?;
+        }
+        // Another client may have taken over. Discard our stale lease without
+        // overwriting the user's newer proxy selection.
+    }
     fs::remove_file(path)?;
     Ok(status(app))
 }
 
 pub fn status(app: &AppHandle) -> SystemProxyStatus {
     let path = snapshot_path(app).ok();
+    #[cfg(not(windows))]
+    let active = path.as_ref().is_some_and(|value| value.exists());
+    #[cfg(windows)]
+    let active = (|| -> Option<bool> {
+        let saved: WindowsProxyLease =
+            serde_json::from_slice(&fs::read(path.as_ref()?).ok()?).ok()?;
+        let current = capture_system_proxy().ok()?;
+        let port = crate::storage::AppStorage::from_app(app)
+            .ok()?
+            .settings()
+            .ok()?
+            .mixed_port;
+        Some(saved.owns(&current, port))
+    })()
+    .unwrap_or(false);
     SystemProxyStatus {
-        active: path.as_ref().is_some_and(|value| value.exists()),
+        active,
         snapshot_path: path.map(|value| value.display().to_string()),
         platform: std::env::consts::OS.to_string(),
     }
@@ -103,16 +178,165 @@ fn snapshot_path(app: &AppHandle) -> AppResult<PathBuf> {
     Ok(directory.join("system-proxy-snapshot.json"))
 }
 
-fn write_snapshot(path: &Path, snapshot: &SystemProxySnapshot) -> AppResult<()> {
+fn write_snapshot(path: &Path, snapshot: &impl Serialize) -> AppResult<()> {
     let bytes = serde_json::to_vec_pretty(snapshot)
         .map_err(|error| AppError::Platform(error.to_string()))?;
-    fs::write(path, bytes)?;
+    let temporary = path.with_extension("tmp");
+    fs::write(&temporary, bytes)?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;
+        fs::set_permissions(&temporary, fs::Permissions::from_mode(0o600))?;
     }
+    fs::rename(&temporary, path)?;
     Ok(())
+}
+
+#[cfg(any(windows, test))]
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(untagged)]
+enum WindowsProxyLease {
+    Tracked {
+        original: SystemProxySnapshot,
+        #[serde(default)]
+        before: Option<SystemProxySnapshot>,
+        applied: SystemProxySnapshot,
+        #[serde(default)]
+        committed: bool,
+    },
+    // Read snapshots written by 0.4.0 without losing recovery support.
+    Legacy(SystemProxySnapshot),
+}
+
+#[cfg(any(windows, test))]
+impl WindowsProxyLease {
+    fn original(&self) -> &SystemProxySnapshot {
+        match self {
+            Self::Tracked { original, .. } | Self::Legacy(original) => original,
+        }
+    }
+
+    fn owns(&self, current: &SystemProxySnapshot, port: u16) -> bool {
+        match self {
+            Self::Tracked {
+                original,
+                before,
+                applied,
+                committed,
+            } => {
+                if *committed {
+                    windows_same_route(current, applied)
+                } else {
+                    windows_transition_matches(
+                        current,
+                        before.as_ref().unwrap_or(original),
+                        applied,
+                    )
+                }
+            }
+            Self::Legacy(original) => {
+                // Older builds did not clear PAC. A newly selected PAC is a
+                // different owner even when the manual proxy entry is unchanged.
+                windows_endpoint_owned(current, port)
+                    && matches!((current, original),
+                        (SystemProxySnapshot::Windows { auto_config_url: current, .. },
+                         SystemProxySnapshot::Windows { auto_config_url: original, .. }) if current == original)
+            }
+        }
+    }
+
+    fn restoration(&self, current: &SystemProxySnapshot, port: u16) -> Option<SystemProxySnapshot> {
+        if !self.owns(current, port) {
+            return None;
+        }
+        let mut restored = self.original().clone();
+        if let (
+            Self::Tracked {
+                applied:
+                    SystemProxySnapshot::Windows {
+                        proxy_override: applied,
+                        ..
+                    },
+                committed: true,
+                ..
+            },
+            SystemProxySnapshot::Windows {
+                proxy_override: current,
+                ..
+            },
+            SystemProxySnapshot::Windows {
+                proxy_override: restored,
+                ..
+            },
+        ) = (self, current, &mut restored)
+        {
+            if current != applied {
+                *restored = current.clone();
+            }
+        }
+        Some(restored)
+    }
+}
+
+#[cfg(any(windows, test))]
+fn windows_proxy_server(port: u16) -> String {
+    format!("http=127.0.0.1:{port};https=127.0.0.1:{port};socks=127.0.0.1:{port}")
+}
+
+#[cfg(any(windows, test))]
+fn windows_endpoint_owned(current: &SystemProxySnapshot, port: u16) -> bool {
+    matches!(current, SystemProxySnapshot::Windows { proxy_enable: 1, proxy_server: Some(server), .. }
+        if server == &windows_proxy_server(port))
+}
+
+#[cfg(any(windows, test))]
+fn windows_applied_proxy(current: &SystemProxySnapshot, port: u16) -> SystemProxySnapshot {
+    let existing = match current {
+        SystemProxySnapshot::Windows { proxy_override, .. } => {
+            proxy_override.as_deref().unwrap_or("")
+        }
+        _ => "",
+    };
+    let mut bypass: Vec<&str> = existing
+        .split(';')
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .collect();
+    for required in ["<local>", "localhost", "127.*", "[::1]"] {
+        if !bypass
+            .iter()
+            .any(|value| value.eq_ignore_ascii_case(required))
+        {
+            bypass.push(required);
+        }
+    }
+    SystemProxySnapshot::Windows {
+        proxy_enable: 1,
+        proxy_server: Some(windows_proxy_server(port)),
+        proxy_override: Some(bypass.join(";")),
+        auto_config_url: None,
+    }
+}
+
+#[cfg(any(windows, test))]
+fn windows_same_route(left: &SystemProxySnapshot, right: &SystemProxySnapshot) -> bool {
+    matches!((left, right), (
+        SystemProxySnapshot::Windows { proxy_enable: le, proxy_server: ls, auto_config_url: la, .. },
+        SystemProxySnapshot::Windows { proxy_enable: re, proxy_server: rs, auto_config_url: ra, .. }
+    ) if le == re && ls == rs && la == ra)
+}
+
+#[cfg(any(windows, test))]
+fn windows_transition_matches(
+    current: &SystemProxySnapshot,
+    original: &SystemProxySnapshot,
+    applied: &SystemProxySnapshot,
+) -> bool {
+    matches!((current, original, applied), (
+        SystemProxySnapshot::Windows { proxy_enable: ce, proxy_server: cs, proxy_override: cb, auto_config_url: ca },
+        SystemProxySnapshot::Windows { proxy_enable: oe, proxy_server: os, proxy_override: ob, auto_config_url: oa },
+        SystemProxySnapshot::Windows { proxy_enable: ae, proxy_server: as_, proxy_override: ab, auto_config_url: aa }
+    ) if (ce == oe || ce == ae) && (cs == os || cs == as_) && (cb == ob || cb == ab) && (ca == oa || ca == aa))
 }
 
 #[cfg(target_os = "macos")]
@@ -490,37 +714,9 @@ fn capture_system_proxy() -> AppResult<SystemProxySnapshot> {
 }
 
 #[cfg(windows)]
-fn apply_system_proxy(port: u16) -> AppResult<()> {
-    use winreg::enums::HKEY_CURRENT_USER;
-    use winreg::RegKey;
-    let key = RegKey::predef(HKEY_CURRENT_USER)
-        .open_subkey_with_flags(
-            "Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings",
-            winreg::enums::KEY_SET_VALUE,
-        )
-        .map_err(|error| AppError::Platform(error.to_string()))?;
-    key.set_value("ProxyEnable", &1u32)
-        .map_err(|error| AppError::Platform(error.to_string()))?;
-    key.set_value(
-        "ProxyServer",
-        &format!("http=127.0.0.1:{port};https=127.0.0.1:{port};socks=127.0.0.1:{port}"),
-    )
-    .map_err(|error| AppError::Platform(error.to_string()))?;
-    key.set_value("ProxyOverride", &"<local>;localhost;127.*;[::1]")
-        .map_err(|error| AppError::Platform(error.to_string()))?;
-    windows_refresh_proxy()
-}
-
-#[cfg(windows)]
 fn verify_system_proxy_inner(port: u16) -> AppResult<()> {
-    use winreg::enums::HKEY_CURRENT_USER;
-    use winreg::RegKey;
-    let key = RegKey::predef(HKEY_CURRENT_USER)
-        .open_subkey("Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings")
-        .map_err(|error| AppError::Platform(error.to_string()))?;
-    let enabled: u32 = key.get_value("ProxyEnable").unwrap_or(0);
-    let server: String = key.get_value("ProxyServer").unwrap_or_default();
-    if enabled != 1 || !server.contains(&format!("127.0.0.1:{port}")) {
+    let current = capture_system_proxy()?;
+    if !windows_same_route(&current, &windows_applied_proxy(&current, port)) {
         return Err(AppError::Platform("Windows 系统代理未正确应用".to_string()));
     }
     Ok(())
@@ -545,11 +741,11 @@ fn restore_snapshot(snapshot: &SystemProxySnapshot) -> AppResult<()> {
             winreg::enums::KEY_SET_VALUE,
         )
         .map_err(|error| AppError::Platform(error.to_string()))?;
-    key.set_value("ProxyEnable", proxy_enable)
-        .map_err(|error| AppError::Platform(error.to_string()))?;
     windows_restore_string(&key, "ProxyServer", proxy_server.as_deref())?;
     windows_restore_string(&key, "ProxyOverride", proxy_override.as_deref())?;
     windows_restore_string(&key, "AutoConfigURL", auto_config_url.as_deref())?;
+    key.set_value("ProxyEnable", proxy_enable)
+        .map_err(|error| AppError::Platform(error.to_string()))?;
     windows_refresh_proxy()
 }
 
@@ -559,10 +755,11 @@ fn windows_restore_string(key: &winreg::RegKey, name: &str, value: Option<&str>)
         Some(value) => key
             .set_value(name, &value)
             .map_err(|error| AppError::Platform(error.to_string())),
-        None => {
-            let _ = key.delete_value(name);
-            Ok(())
-        }
+        None => match key.delete_value(name) {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(AppError::Platform(error.to_string())),
+        },
     }
 }
 
@@ -663,5 +860,147 @@ mod tests {
             parse_mac_default_route_device(output).as_deref(),
             Some("en0")
         );
+    }
+}
+
+#[cfg(test)]
+mod windows_proxy_tests {
+    use super::*;
+
+    fn original() -> SystemProxySnapshot {
+        SystemProxySnapshot::Windows {
+            proxy_enable: 1,
+            proxy_server: Some("127.0.0.1:7897".into()),
+            proxy_override: Some("*.company.test;<local>".into()),
+            auto_config_url: Some("https://example.test/proxy.pac".into()),
+        }
+    }
+
+    fn lease(committed: bool) -> WindowsProxyLease {
+        let original = original();
+        let applied = windows_applied_proxy(&original, 7890);
+        WindowsProxyLease::Tracked {
+            before: Some(original.clone()),
+            original,
+            applied,
+            committed,
+        }
+    }
+
+    #[test]
+    fn takeover_preserves_bypass_and_temporarily_clears_pac() {
+        let applied = windows_applied_proxy(&original(), 7890);
+        if let SystemProxySnapshot::Windows {
+            proxy_override,
+            auto_config_url,
+            ..
+        } = &applied
+        {
+            assert_eq!(
+                proxy_override.as_deref(),
+                Some("*.company.test;<local>;localhost;127.*;[::1]")
+            );
+            assert!(auto_config_url.is_none());
+        }
+        assert_eq!(lease(true).restoration(&applied, 7890), Some(original()));
+    }
+
+    #[test]
+    fn stopping_does_not_overwrite_another_proxy_client() {
+        assert!(lease(true).restoration(&original(), 7890).is_none());
+        let different_port = windows_applied_proxy(&original(), 7890);
+        assert!(!windows_endpoint_owned(&different_port, 789));
+        let mut disabled = windows_applied_proxy(&original(), 7890);
+        if let SystemProxySnapshot::Windows { proxy_enable, .. } = &mut disabled {
+            *proxy_enable = 0;
+        }
+        assert!(lease(true).restoration(&disabled, 7890).is_none());
+    }
+
+    #[test]
+    fn interrupted_write_can_restore_and_bypass_edits_are_preserved() {
+        let mut partial = original();
+        if let SystemProxySnapshot::Windows { proxy_server, .. } = &mut partial {
+            *proxy_server = Some(windows_proxy_server(7890));
+        }
+        assert_eq!(lease(false).restoration(&partial, 7890), Some(original()));
+        let mut edited = windows_applied_proxy(&original(), 7890);
+        if let SystemProxySnapshot::Windows { proxy_override, .. } = &mut edited {
+            *proxy_override = Some("*.new.test".into());
+        }
+        let restored = lease(true).restoration(&edited, 7890).unwrap();
+        assert!(windows_same_route(&restored, &original()));
+        if let SystemProxySnapshot::Windows { proxy_override, .. } = restored {
+            assert_eq!(proxy_override.as_deref(), Some("*.new.test"));
+        }
+    }
+
+    #[test]
+    fn reads_legacy_snapshot_but_does_not_restore_over_new_pac() {
+        let saved: WindowsProxyLease =
+            serde_json::from_str(&serde_json::to_string(&original()).unwrap()).unwrap();
+        let mut current = original();
+        if let SystemProxySnapshot::Windows { proxy_server, .. } = &mut current {
+            *proxy_server = Some(windows_proxy_server(7890));
+        }
+        assert!(saved.owns(&current, 7890));
+        if let SystemProxySnapshot::Windows {
+            auto_config_url, ..
+        } = &mut current
+        {
+            *auto_config_url = Some("https://new.test/proxy.pac".into());
+        }
+        assert!(!saved.owns(&current, 7890));
+        let tracked = serde_json::to_vec(&lease(true)).unwrap();
+        assert!(matches!(
+            serde_json::from_slice::<WindowsProxyLease>(&tracked).unwrap(),
+            WindowsProxyLease::Tracked {
+                committed: true,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn interrupted_restoration_remains_retryable_at_each_write() {
+        let target = original();
+        let applied = windows_applied_proxy(&target, 7890);
+        let restoring = WindowsProxyLease::Tracked {
+            original: target.clone(),
+            before: Some(applied.clone()),
+            applied: target.clone(),
+            committed: false,
+        };
+        let mut partial = applied;
+        assert_eq!(restoring.restoration(&partial, 7890), Some(target.clone()));
+        if let SystemProxySnapshot::Windows { proxy_server, .. } = &mut partial {
+            *proxy_server = Some("127.0.0.1:7897".into());
+        }
+        assert_eq!(restoring.restoration(&partial, 7890), Some(target.clone()));
+        if let SystemProxySnapshot::Windows { proxy_override, .. } = &mut partial {
+            *proxy_override = Some("*.company.test;<local>".into());
+        }
+        assert_eq!(restoring.restoration(&partial, 7890), Some(target.clone()));
+        if let SystemProxySnapshot::Windows {
+            auto_config_url, ..
+        } = &mut partial
+        {
+            *auto_config_url = Some("https://example.test/proxy.pac".into());
+        }
+        assert_eq!(restoring.restoration(&partial, 7890), Some(target));
+    }
+
+    #[test]
+    fn failed_port_change_recovers_from_the_actual_previous_endpoint() {
+        let original = original();
+        let before = windows_applied_proxy(&original, 7890);
+        let applied = windows_applied_proxy(&before, 7891);
+        let saved = WindowsProxyLease::Tracked {
+            original: original.clone(),
+            before: Some(before.clone()),
+            applied,
+            committed: false,
+        };
+        assert_eq!(saved.restoration(&before, 7891), Some(original));
     }
 }

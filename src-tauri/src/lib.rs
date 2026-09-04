@@ -372,24 +372,42 @@ async fn finish_runtime_start(
             let _ = state.stop(Some(app));
             return Err(dto(error));
         }
-        if let Err(error) = network_safety::verify_local_proxy(settings).await {
-            let _ = platform::restore_system_proxy(app);
-            let _ = state.stop(Some(app));
-            return Err(dto(error));
+        match network_safety::verify_local_proxy(settings).await {
+            Ok(report) => {
+                let _ = app.emit("network-safety-report", &report);
+            }
+            Err(error) => {
+                let _ = platform::restore_system_proxy(app);
+                let _ = state.stop(Some(app));
+                return Err(dto(error));
+            }
         }
     } else if settings.network_mode == NetworkMode::Tun {
         tokio::time::sleep(Duration::from_millis(900)).await;
-        let helper = tun_service::status();
-        if !helper.ready() || !helper.runtime_running {
-            let _ = state.stop(Some(app));
-            return Err(dto(AppError::Runtime(
-                helper
-                    .last_error
-                    .unwrap_or_else(|| helper.message.to_string()),
-            )));
+        #[cfg(not(windows))]
+        {
+            let helper = tun_service::status();
+            if !helper.ready() || !helper.runtime_running {
+                let _ = state.stop(Some(app));
+                return Err(dto(AppError::Runtime(
+                    helper
+                        .last_error
+                        .unwrap_or_else(|| helper.message.to_string()),
+                )));
+            }
         }
+        #[cfg(windows)]
+        {
+            let status = state.status(Some(app));
+            if status.phase != models::RuntimePhase::Running {
+                let _ = state.stop(Some(app));
+                return Err(dto(AppError::Runtime(status.message)));
+            }
+        }
+        let started_at = state.status(Some(app)).started_at;
         if let Some(error_log) = state.logs(100).into_iter().rev().find(|log| {
-            log.level == "error"
+            started_at.is_some_and(|started| log.timestamp >= started)
+                && log.level == "error"
                 && (log.message.to_lowercase().contains("tun")
                     || log.message.to_lowercase().contains("permission")
                     || log.message.to_lowercase().contains("route"))
@@ -397,9 +415,14 @@ async fn finish_runtime_start(
             let _ = state.stop(Some(app));
             return Err(dto(AppError::Runtime(error_log.message)));
         }
-        if let Err(error) = network_safety::verify_tun_route().await {
-            let _ = state.stop(Some(app));
-            return Err(dto(error));
+        match network_safety::verify_tun_route().await {
+            Ok(report) => {
+                let _ = app.emit("network-safety-report", &report);
+            }
+            Err(error) => {
+                let _ = state.stop(Some(app));
+                return Err(dto(error));
+            }
         }
     }
     Ok(())
@@ -428,8 +451,28 @@ fn active_effective_config(
 }
 
 #[tauri::command]
-fn tun_helper_status() -> TunHelperStatus {
-    tun_service::status()
+fn tun_helper_status(app: AppHandle, state: State<'_, MihomoRuntime>) -> TunHelperStatus {
+    let status = tun_service::status();
+    #[cfg(windows)]
+    {
+        let mut status = status;
+        if AppStorage::from_app(&app)
+            .and_then(|storage| storage.settings())
+            .is_ok_and(|settings| settings.network_mode == NetworkMode::Tun)
+        {
+            let runtime = state.status(Some(&app));
+            status.runtime_running = runtime.phase == models::RuntimePhase::Running;
+            status.runtime_pid = runtime.pid;
+            status.runtime_version = runtime.version;
+            status.last_error = runtime.last_error;
+        }
+        status
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (app, state);
+        status
+    }
 }
 
 #[tauri::command]
@@ -471,15 +514,26 @@ fn open_tun_helper_settings() -> Result<(), AppErrorDto> {
 
 #[tauri::command]
 async fn prepare_tun_active_profile(app: AppHandle) -> Result<(), AppErrorDto> {
+    let helper = tun_service::status();
+    if !helper.ready() {
+        return Err(dto(AppError::Platform(helper.message)));
+    }
     let storage = AppStorage::from_app(&app).map_err(dto)?;
     let mut settings = storage.settings().map_err(dto)?;
     settings.network_mode = NetworkMode::Tun;
     let effective = active_effective_config(&app, &settings).map_err(dto)?;
     runtime::validate_source(&app, &effective.yaml).map_err(dto)?;
-    tauri::async_runtime::spawn_blocking(move || tun_service::prepare(&effective.yaml))
-        .await
-        .map_err(|error| dto(AppError::Runtime(error.to_string())))?
-        .map_err(dto)
+    #[cfg(windows)]
+    {
+        Ok(())
+    }
+    #[cfg(not(windows))]
+    {
+        tauri::async_runtime::spawn_blocking(move || tun_service::prepare(&effective.yaml))
+            .await
+            .map_err(|error| dto(AppError::Runtime(error.to_string())))?
+            .map_err(dto)
+    }
 }
 
 #[tauri::command]

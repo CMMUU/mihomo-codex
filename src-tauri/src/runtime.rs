@@ -2,6 +2,7 @@ use crate::error::{AppError, AppResult};
 use crate::models::RuntimePhase;
 use crate::tun_service;
 use chrono::{DateTime, Utc};
+#[cfg(not(windows))]
 use rand::RngCore;
 use regex::Regex;
 use serde::Serialize;
@@ -11,11 +12,19 @@ use std::fs;
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, ExitStatus, Stdio};
+#[cfg(not(windows))]
+use std::process::Child;
+use std::process::{Command, ExitStatus, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Manager};
+
+#[cfg(windows)]
+#[path = "windows_process.rs"]
+mod windows_process;
+#[cfg(windows)]
+use windows_process::Child;
 
 const MAX_LOG_LINES: usize = 2_000;
 const VALIDATION_TIMEOUT: Duration = Duration::from_secs(30);
@@ -96,8 +105,9 @@ impl MihomoRuntime {
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
-        let mut child = command
-            .spawn()
+        // Timestamp the run before the core can emit any startup diagnostics.
+        let started_at = Utc::now();
+        let mut child = spawn_core_command(&mut command, None)
             .map_err(|error| AppError::Runtime(error.to_string()))?;
         if let Some(stdout) = child.stdout.take() {
             spawn_log_reader(self.logs.clone(), "stdout", stdout);
@@ -110,7 +120,7 @@ impl MihomoRuntime {
         *lock(&self.binary_path, "binary path")? = Some(binary);
         *lock(&self.binary_version, "binary version")? = version;
         *lock(&self.config_path, "config path")? = Some(config_path);
-        *lock(&self.started_at, "started at")? = Some(Utc::now());
+        *lock(&self.started_at, "started at")? = Some(started_at);
         *lock(&self.last_error, "last error")? = None;
         self.set_phase(RuntimePhase::Running);
         self.push_log("info", "runtime", format!("Mihomo started with pid {pid}"));
@@ -118,46 +128,60 @@ impl MihomoRuntime {
     }
 
     pub fn start_tun(&self, app: &AppHandle, source: &str) -> AppResult<RuntimeStatus> {
-        if self.is_running()? {
-            return Err(AppError::Conflict("Mihomo 已经在运行".to_string()));
+        #[cfg(windows)]
+        {
+            let session = tun_service::status();
+            if !session.ready() {
+                return Err(AppError::Platform(session.message));
+            }
+            // Elevated Windows sessions own the core directly. They do not
+            // create a macOS helper lease or claim a persistent service exists.
+            self.start(app, source)
         }
-        let helper = tun_service::status();
-        if !helper.ready() {
-            return Err(AppError::Platform(helper.message));
-        }
-        self.set_phase(RuntimePhase::Validating);
-        preflight_ports(source)?;
-        validate_source(app, source)?;
-        self.set_phase(RuntimePhase::Starting);
+        #[cfg(not(windows))]
+        {
+            if self.is_running()? {
+                return Err(AppError::Conflict("Mihomo 已经在运行".to_string()));
+            }
+            let helper = tun_service::status();
+            if !helper.ready() {
+                return Err(AppError::Platform(helper.message));
+            }
+            self.set_phase(RuntimePhase::Validating);
+            preflight_ports(source)?;
+            validate_source(app, source)?;
+            self.set_phase(RuntimePhase::Starting);
 
-        let mut lease_bytes = [0_u8; 32];
-        rand::rng().fill_bytes(&mut lease_bytes);
-        let lease = lease_bytes
-            .iter()
-            .map(|byte| format!("{byte:02x}"))
-            .collect::<String>();
-        let started = tun_service::start(source, &lease)?;
-        let config_path = PathBuf::from(&started.config_path);
-        let binary_path = config_path.parent().map(|parent| parent.join("mihomo"));
+            let mut lease_bytes = [0_u8; 32];
+            rand::rng().fill_bytes(&mut lease_bytes);
+            let lease = lease_bytes
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>();
+            let started_at = Utc::now();
+            let started = tun_service::start(source, &lease)?;
+            let config_path = PathBuf::from(&started.config_path);
+            let binary_path = config_path.parent().map(|parent| parent.join("mihomo"));
 
-        *lock(&self.tun_lease, "tun lease")? = Some(lease.clone());
-        *lock(&self.tun_pid, "tun pid")? = Some(started.pid);
-        *lock(&self.binary_path, "binary path")? = binary_path;
-        *lock(&self.binary_version, "binary version")? = started.version;
-        *lock(&self.config_path, "config path")? = Some(config_path);
-        *lock(&self.started_at, "started at")? = Some(Utc::now());
-        *lock(&self.last_error, "last error")? = None;
-        if let Ok(mut error) = self.tun_heartbeat_error.lock() {
-            *error = None;
+            *lock(&self.tun_lease, "tun lease")? = Some(lease.clone());
+            *lock(&self.tun_pid, "tun pid")? = Some(started.pid);
+            *lock(&self.binary_path, "binary path")? = binary_path;
+            *lock(&self.binary_version, "binary version")? = started.version;
+            *lock(&self.config_path, "config path")? = Some(config_path);
+            *lock(&self.started_at, "started at")? = Some(started_at);
+            *lock(&self.last_error, "last error")? = None;
+            if let Ok(mut error) = self.tun_heartbeat_error.lock() {
+                *error = None;
+            }
+            self.start_tun_heartbeat(lease);
+            self.set_phase(RuntimePhase::Running);
+            self.push_log(
+                "info",
+                "runtime",
+                format!("Privileged TUN Mihomo started with pid {}", started.pid),
+            );
+            Ok(self.status(Some(app)))
         }
-        self.start_tun_heartbeat(lease);
-        self.set_phase(RuntimePhase::Running);
-        self.push_log(
-            "info",
-            "runtime",
-            format!("Privileged TUN Mihomo started with pid {}", started.pid),
-        );
-        Ok(self.status(Some(app)))
     }
 
     pub fn stop(&self, app: Option<&AppHandle>) -> AppResult<RuntimeStatus> {
@@ -378,6 +402,7 @@ impl MihomoRuntime {
         push_log(&self.logs, level, source, message);
     }
 
+    #[cfg(not(windows))]
     fn start_tun_heartbeat(&self, lease: String) {
         self.stop_tun_heartbeat();
         let stop = Arc::new(AtomicBool::new(false));
@@ -503,7 +528,7 @@ fn run_validation_command(
         .stdin(Stdio::null())
         .stdout(Stdio::from(log.try_clone()?))
         .stderr(Stdio::from(log.try_clone()?));
-    let spawned = command.spawn();
+    let spawned = spawn_core_command(command, Some(&log));
     // Release the Command's copies as well as the child's handles before the
     // cleanup guard removes its private file, including on Windows.
     command.stdout(Stdio::null()).stderr(Stdio::null());
@@ -609,9 +634,13 @@ fn preflight_ports(source: &str) -> AppResult<()> {
 }
 
 fn binary_version(path: &Path) -> AppResult<String> {
+    #[cfg(not(windows))]
     let output = Command::new(path)
         .arg("-v")
         .output()
+        .map_err(|error| AppError::Runtime(error.to_string()))?;
+    #[cfg(windows)]
+    let output = windows_process::output(Command::new(path).arg("-v"))
         .map_err(|error| AppError::Runtime(error.to_string()))?;
     if !output.status.success() {
         return Err(AppError::Runtime(
@@ -621,6 +650,18 @@ fn binary_version(path: &Path) -> AppResult<String> {
     first_non_empty_line(&output.stdout)
         .or_else(|| first_non_empty_line(&output.stderr))
         .ok_or_else(|| AppError::Runtime("Mihomo 未返回版本信息".to_string()))
+}
+
+fn spawn_core_command(command: &mut Command, log: Option<&fs::File>) -> std::io::Result<Child> {
+    #[cfg(windows)]
+    {
+        windows_process::spawn(command, log)
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = log;
+        command.spawn()
+    }
 }
 
 pub(crate) fn resolve_binary(app: Option<&AppHandle>) -> Option<PathBuf> {

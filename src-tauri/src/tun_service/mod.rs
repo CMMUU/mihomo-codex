@@ -12,6 +12,8 @@ mod codesign;
 pub mod daemon;
 #[cfg(target_os = "macos")]
 mod protocol;
+#[cfg(windows)]
+mod windows;
 #[cfg(target_os = "macos")]
 mod xpc;
 
@@ -79,9 +81,13 @@ pub fn status() -> TunHelperStatus {
     {
         admin::status()
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(windows)]
     {
-        TunHelperStatus::unsupported(format!("{} TUN Helper 尚未安装", std::env::consts::OS))
+        windows::status()
+    }
+    #[cfg(not(any(target_os = "macos", windows)))]
+    {
+        TunHelperStatus::unsupported(format!("{} TUN Helper 尚未实现", std::env::consts::OS))
     }
 }
 
@@ -92,10 +98,7 @@ pub fn install() -> AppResult<TunHelperStatus> {
     }
     #[cfg(not(target_os = "macos"))]
     {
-        Err(AppError::Platform(format!(
-            "{} TUN Helper 尚未实现",
-            std::env::consts::OS
-        )))
+        Err(service_unavailable())
     }
 }
 
@@ -106,10 +109,7 @@ pub fn repair() -> AppResult<TunHelperStatus> {
     }
     #[cfg(not(target_os = "macos"))]
     {
-        Err(AppError::Platform(format!(
-            "{} TUN Helper 尚未实现",
-            std::env::consts::OS
-        )))
+        Err(service_unavailable())
     }
 }
 
@@ -120,10 +120,7 @@ pub fn uninstall() -> AppResult<()> {
     }
     #[cfg(not(target_os = "macos"))]
     {
-        Err(AppError::Platform(format!(
-            "{} TUN Helper 尚未实现",
-            std::env::consts::OS
-        )))
+        Err(service_unavailable())
     }
 }
 
@@ -134,9 +131,7 @@ pub fn open_approval_settings() -> AppResult<()> {
     }
     #[cfg(not(target_os = "macos"))]
     {
-        Err(AppError::Platform(
-            "当前平台没有对应的授权设置页".to_string(),
-        ))
+        Err(service_unavailable())
     }
 }
 
@@ -148,10 +143,7 @@ pub fn prepare(source: &str) -> AppResult<()> {
     #[cfg(not(target_os = "macos"))]
     {
         let _ = source;
-        Err(AppError::Platform(format!(
-            "{} TUN Helper 尚未实现",
-            std::env::consts::OS
-        )))
+        Err(service_unavailable())
     }
 }
 
@@ -163,10 +155,7 @@ pub fn start(source: &str, lease: &str) -> AppResult<TunRuntimeStart> {
     #[cfg(not(target_os = "macos"))]
     {
         let _ = (source, lease);
-        Err(AppError::Platform(format!(
-            "{} TUN Helper 尚未实现",
-            std::env::consts::OS
-        )))
+        Err(service_unavailable())
     }
 }
 
@@ -178,7 +167,7 @@ pub fn heartbeat(lease: &str) -> AppResult<()> {
     #[cfg(not(target_os = "macos"))]
     {
         let _ = lease;
-        Err(AppError::Platform("当前平台没有 TUN Helper".to_string()))
+        Err(service_unavailable())
     }
 }
 
@@ -189,7 +178,7 @@ pub fn stop() -> AppResult<()> {
     }
     #[cfg(not(target_os = "macos"))]
     {
-        Err(AppError::Platform("当前平台没有 TUN Helper".to_string()))
+        Err(service_unavailable())
     }
 }
 
@@ -203,4 +192,13 @@ pub fn logs(limit: usize) -> Vec<TunRuntimeLog> {
         let _ = limit;
         Vec::new()
     }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn service_unavailable() -> AppError {
+    #[cfg(windows)]
+    let message = windows::SESSION_INSTRUCTIONS.to_string();
+    #[cfg(not(windows))]
+    let message = format!("{} TUN Helper 尚未实现", std::env::consts::OS);
+    AppError::Platform(message)
 }

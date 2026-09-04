@@ -6,14 +6,15 @@
 
 - 私有源码仓库：[CMMUU/mihomo-codex](https://github.com/CMMUU/mihomo-codex)
 - 版本发布：[GitHub Releases](https://github.com/CMMUU/mihomo-codex/releases)
-- 当前版本 [v0.4.0](https://github.com/CMMUU/mihomo-codex/releases/tag/v0.4.0) 提供 macOS Apple Silicon（macOS 13+）安装包与 SHA-256 校验文件，新增可视化规则管理、高级文本入口、规则版本回滚和全新图标。
-- Windows、Linux 和 Intel Mac 仍需对应平台的安装与网络接管验收；构建配置存在不等于已完成平台验证。
+- 当前版本 [v0.5.0](https://github.com/CMMUU/mihomo-codex/releases/tag/v0.5.0) 改进 Windows 权限提示、内核进程回收、系统代理恢复与连通性诊断；安装包和 SHA-256 校验文件以 Release 页面实际附件为准。
+- Windows 10/11 TUN 为实验性功能，已实现管理员会话运行方式，尚未完成真实 TUN 路由与恢复验收。各平台的安装、构建和网络接管验证范围见 [v0.5.0 发布说明](docs/发布说明-v0.5.0.md)。
 - 仓库及 Release 为私有，仅有仓库权限的账号可访问。本次没有为自研应用新增开源授权条款；第三方依赖沿用各自许可证。
 
 ## 设计文档
 
 - [软件设计说明书（SDD）](docs/软件设计说明书.md)
 - [架构与里程碑](docs/架构与里程碑.md)
+- [v0.5.0 发布说明](docs/发布说明-v0.5.0.md)
 - [v0.4.0 发布说明](docs/发布说明-v0.4.0.md)
 - [规则管理与升级验证](docs/规则管理与升级验证.md)
 - [当前应用图标](assets/brand/图标说明.md)
@@ -44,6 +45,8 @@
 - OpenAI 自动灾备：独立检测、最多 10 个节点、带宽排序、自动切换和订阅更新后维护
 - 分层连通性诊断
 - System Proxy 接管前后安全预检、活动物理网卡筛选和失败自动恢复
+- Windows 系统代理事务恢复、外部客户端接管识别，以及 PAC／代理例外保留
+- Windows 10/11 实验性 TUN 管理员会话，核心进程树随停止或退出回收
 - 独立于 Mihomo 的 OS 全局实时流量监控，应用内和 macOS 菜单栏均显示纵向上下行速率
 - 系统托盘、单实例和登录启动设置
 - 独立浅色、深色、深紫与跟随系统外观，点击立即生效并保存，不触发代理接管
@@ -69,7 +72,18 @@
 - 历史验证记录与 Figma 原始证据仍保留旧名称；更名不代表重新完成所有平台网络验收。
 - 发布前运行 `npm run test:branding`，检查构建名称与兼容身份一致性。
 
+## Windows 使用说明
+
+- Windows TUN 使用管理员会话：先从托盘退出应用，再右键选择「以管理员身份运行」。整个应用会获得管理员权限，不安装常驻 Windows 服务，也不使用 macOS Helper 的安装/授权流程。普通系统代理不要求管理员会话。
+- Windows 内核、配置校验和版本探测进程在创建时绑定 Job；停止、退出或应用进程异常终止会关闭受保护的进程树。关闭主窗口仅隐藏到托盘。系统代理在正常停止/退出时按快照恢复，异常终止后在下次启动尝试恢复。
+- 系统代理恢复会核对当前代理是否仍由本应用控制，避免覆盖后来切回的 Clash 等客户端；临时接管会保留代理例外、停用 PAC，并在仍持有控制权时还原原有 PAC。切换前应关闭其他客户端的系统代理/TUN。
+- 启动预检以 Google/Cloudflare 至少一个返回预期状态为基础联网条件；OpenAI 仍独立检查并显示警告，专项失败不会阻止基础代理启动。两个基础目标都失败时仍会阻止启动。
+
+**Windows TUN 为实验性功能。** 已实现管理员权限检测和会话内核生命周期；真实 TUN 路由、DNS、停止后的网络恢复及异常退出恢复尚未完成整体验收。单元测试、界面模拟检查和构建成功不代表已通过网络接管验收。
+
 ## 开发环境
+
+Windows 10/11 x64/ARM64 使用对应 MSVC 工具链；需要 Microsoft C++ Build Tools、Windows SDK、Node.js/npm 和 WebView2。`npm run core:prepare` 按 Rust host target 下载内核，GNU target 不在当前内核清单中。
 
 ```bash
 npm install

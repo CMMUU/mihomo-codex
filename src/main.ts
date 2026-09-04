@@ -403,19 +403,19 @@ app.innerHTML = `
             <label><span>日志保留天数</span><input id="settings-retention" type="number" min="1" max="90" /></label>
             <div class="span-2"><button class="button button-primary" type="submit">保存设置</button></div>
           </form>
-          <div class="settings-note">切换网络模式和端口前需要先停止 Mihomo。首次开启 TUN 会先安装最小权限 Helper，并在旧网络模式仍运行时完成预检。</div>
+          <div class="settings-note" id="network-mode-help">切换网络模式和端口前需要先停止 Mihomo。开启 TUN 前会检查权限和配置。</div>
         </article>
         <article class="panel tun-helper-panel">
           <div class="panel-heading">
-            <div><div class="section-label">PRIVILEGED TUN</div><h2>TUN 权限服务</h2></div>
+            <div><div class="section-label">PRIVILEGED TUN</div><h2 id="tun-panel-heading">TUN 权限</h2></div>
             <span class="control-state-pill" id="tun-helper-state">正在检查</span>
           </div>
           <div class="tun-helper-summary">
             <div class="tun-helper-mark">T</div>
-            <div><strong id="tun-helper-title">正在检查 TUN Helper</strong><p id="tun-helper-message">仅 TUN 内核使用管理员权限，应用界面保持普通用户运行。</p></div>
+            <div><strong id="tun-helper-title">正在检查 TUN 权限</strong><p id="tun-helper-message">正在读取当前系统的 TUN 运行方式。</p></div>
           </div>
           <div class="about-grid tun-helper-details">
-            <span>协议版本</span><strong id="tun-helper-protocol">—</strong>
+              <span id="tun-helper-protocol-label">协议版本</span><strong id="tun-helper-protocol">—</strong>
             <span>特权内核</span><strong id="tun-helper-runtime">未运行</strong>
           </div>
           <div class="toolbar tun-helper-actions">
@@ -814,7 +814,7 @@ function renderSubscriptions() {
   $("#subscription-summary-updated")!.textContent = formatPolicyDate(latest);
   $("#subscription-summary-safety")!.textContent = store.networkSafety
     ? store.networkSafety.success
-      ? "代理预检通过"
+      ? store.networkSafety.warnings?.length ? "联网正常 · 部分检测未通过" : "代理预检通过"
       : "代理预检失败"
     : store.runtime?.phase === "running"
       ? "等待检查"
@@ -984,18 +984,25 @@ function tunHelperStateLabel(state: TunHelperStatus["state"] | undefined): strin
 function renderTunHelper() {
   const helper = store.tunHelper;
   const state = helper?.state;
+  const windows = store.appInfo?.targetOs === "windows";
   const stateElement = $("#tun-helper-state")!;
-  stateElement.textContent = tunHelperStateLabel(state);
+  stateElement.textContent = windows && state === "requires_approval" ? "需要管理员权限" : tunHelperStateLabel(state);
   stateElement.classList.toggle("is-running", state === "ready");
   stateElement.classList.toggle(
     "is-warning",
     state === "requires_approval" || state === "outdated" || state === "unreachable",
   );
-  $("#tun-helper-title")!.textContent =
-    state === "ready" ? "最小权限 TUN Helper 已就绪" : tunHelperStateLabel(state);
+  $("#tun-panel-heading")!.textContent = windows ? "Windows TUN 权限" : "TUN 权限服务";
+  $("#network-mode-help")!.textContent = windows
+    ? "Windows TUN 需要先从托盘退出应用，再右键以管理员身份运行。关闭窗口会保留托盘运行；停止内核或退出应用才会关闭 TUN。使用系统代理前，请先关闭其他代理客户端的系统代理。"
+    : "切换网络模式和端口前需要先停止 Mihomo。首次开启 TUN 会先安装最小权限 Helper，并在旧网络模式仍运行时完成预检。";
+  $("#tun-helper-title")!.textContent = windows
+    ? state === "ready" ? "管理员会话已就绪" : "以管理员身份运行后可开启 TUN"
+    : state === "ready" ? "最小权限 TUN Helper 已就绪" : tunHelperStateLabel(state);
   $("#tun-helper-message")!.textContent =
-    helper?.message ?? "仅 TUN 内核使用管理员权限，应用界面保持普通用户运行。";
-  $("#tun-helper-protocol")!.textContent = helper?.protocolVersion
+    helper?.message ?? "正在读取当前系统的 TUN 运行方式。";
+  $("#tun-helper-protocol-label")!.textContent = windows ? "运行方式" : "协议版本";
+  $("#tun-helper-protocol")!.textContent = windows ? "管理员会话（无常驻服务）" : helper?.protocolVersion
     ? `v${helper.protocolVersion}`
     : "—";
   $("#tun-helper-runtime")!.textContent = helper?.runtimeRunning
@@ -1006,15 +1013,15 @@ function renderTunHelper() {
   const repair = $("#tun-helper-repair") as HTMLButtonElement;
   const open = $("#tun-helper-open-settings") as HTMLButtonElement;
   const uninstall = $("#tun-helper-uninstall") as HTMLButtonElement;
-  install.classList.toggle("is-hidden", state !== "not_installed");
+  install.classList.toggle("is-hidden", windows || state !== "not_installed");
   repair.classList.toggle(
     "is-hidden",
-    state !== "outdated" && state !== "unreachable",
+    windows || (state !== "outdated" && state !== "unreachable"),
   );
-  open.classList.toggle("is-hidden", state !== "requires_approval");
+  open.classList.toggle("is-hidden", windows || state !== "requires_approval");
   uninstall.classList.toggle(
     "is-hidden",
-    !state || state === "unsupported" || state === "not_installed",
+    windows || !state || state === "unsupported" || state === "not_installed",
   );
   install.disabled = networkModeSwitching;
   repair.disabled = networkModeSwitching || running;
@@ -1103,9 +1110,12 @@ document.querySelectorAll<HTMLButtonElement>("[data-theme-choice]").forEach((but
 themeController.refresh();
 
 async function refreshRuntimeOnly() {
-  const [runtime, systemProxy] = await Promise.all([api.runtime(), api.systemProxy()]);
+  const [runtime, systemProxy, tunHelper] = await Promise.all([api.runtime(), api.systemProxy(), api.tunHelperStatus()]);
   store.runtime = runtime;
   store.systemProxy = systemProxy;
+  store.tunHelper = tunHelper;
+  if (runtime.phase !== "running") store.networkSafety = null;
+  renderTunHelper();
   renderHeader();
   renderOverview();
   renderSubscriptions();
@@ -1135,7 +1145,7 @@ async function stopRuntime() {
   runtimeActionInFlight = true;
   renderHeader();
   try {
-    const result = await action("Mihomo 已停止，系统代理已恢复", () => api.stop());
+    const result = await action("Mihomo 已停止", () => api.stop());
     if (result) store.runtime = result;
   } finally {
     runtimeActionInFlight = false;
@@ -1228,6 +1238,11 @@ async function ensureTunHelperReady(): Promise<boolean> {
   renderTunHelper();
 
   if (helper.state === "requires_approval") {
+    if (store.appInfo?.targetOs === "windows") {
+      toast(helper.message, "info");
+      navigate("settings");
+      return false;
+    }
     await action("", () => api.openTunHelperSettings());
     toast("请在系统设置中批准 mihomo-codex TUN Helper，然后再次开启 TUN", "error");
     return false;
@@ -1385,7 +1400,9 @@ async function runNetworkSafetyCheck() {
   const summary = report.checks
     .map((check) => `${check.target} ${check.actualStatus ?? "失败"}`)
     .join(" · ");
-  toast(`代理安全预检通过：${summary}`, "success");
+  toast(report.warnings?.length
+    ? `基础联网正常；${report.warnings.join("；")}`
+    : `代理安全预检通过：${summary}`, report.warnings?.length ? "info" : "success");
 }
 
 async function refreshAllSubscriptions() {
@@ -2262,6 +2279,12 @@ window.setInterval(() => {
 void listen<GlobalTrafficSnapshot>("global-traffic", (event) => {
   store.globalTraffic = event.payload;
   renderGlobalTraffic();
+});
+
+void listen<NetworkSafetyReport>("network-safety-report", (event) => {
+  store.networkSafety = event.payload;
+  renderSubscriptions();
+  if (event.payload.warnings?.length) toast(event.payload.warnings.join("；"), "info");
 });
 
 void listen<string>("navigate-view", (event) => {

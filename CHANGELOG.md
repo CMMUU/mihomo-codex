@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.5.0 - 2026-09-04
+
+- Add experimental Windows 10/11 TUN support through an elevated application session; the entire app runs as administrator without installing a persistent Windows service. Real TUN routing and recovery acceptance remain pending.
+- Show platform-specific TUN permission guidance, including how to exit the tray app and restart with administrator privileges on Windows.
+- Attach Windows core, native-validator and version-probe processes to a private Job Object at creation; stopping the core, exiting the app or terminating the app closes the protected process tree.
+- Require at least one Google/Cloudflare connectivity target to pass proxy and TUN checks; retain OpenAI-specific failures as visible warnings without blocking otherwise usable connectivity.
+- Track Windows system-proxy transitions with original, before and applied snapshots, including recovery from interrupted apply/restore operations and compatibility with legacy snapshots.
+- Check proxy ownership before restoration so a later switch to Clash or another client is preserved; retain proxy bypass entries, temporarily clear PAC during takeover, and restore the previous PAC when still owned.
+- Add coverage for Windows permission reporting, process ownership, proxy recovery and nonblocking connectivity warnings; distinguish automated checks from actual installation and network takeover acceptance.
+
 ## 0.4.0 - 2026-09-03
 
 - Replace the desktop and sidebar icons with the original “双路汇聚” routing monogram; preserve the application, data-directory and helper identities.

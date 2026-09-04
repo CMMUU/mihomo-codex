@@ -228,6 +228,7 @@ export type NetworkSafetyReport = {
   success: boolean;
   proxyEndpoint: string;
   checks: NetworkSafetyCheck[];
+  warnings: string[];
 };
 
 export type BinaryInfo = {
