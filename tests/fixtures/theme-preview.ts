@@ -12,8 +12,8 @@ import type {
 } from "../../src/types";
 import type { ThemePreference } from "../../src/theme";
 
-const STORAGE_KEY = "mihomo-codex:test-fixture:theme-preview:v1";
-const RULES_STORAGE_KEY = "mihomo-codex:test-fixture:user-rules:v1";
+const STORAGE_KEY = "routedeck:test-fixture:theme-preview:v1";
+const RULES_STORAGE_KEY = "routedeck:test-fixture:user-rules:v1";
 const THEMES: readonly ThemePreference[] = ["system", "light", "dark", "purple"];
 type FixtureState = { theme: ThemePreference; systemDark: boolean };
 
@@ -367,7 +367,7 @@ function settings(): AppSettings {
 }
 
 const readonlyReplies: Record<string, () => unknown> = {
-  app_info: () => ({ productName: "mihomo-codex", version: `${packageInfo.version} · 合成预览`, targetOs: "macos", targetArch: "aarch64" }),
+  app_info: () => ({ productName: "RouteDeck", version: `${packageInfo.version} · 合成预览`, targetOs: "macos", targetArch: "aarch64" }),
   get_settings: settings,
   get_user_rules: userRulesState,
   probe_mihomo: () => ({ available: true, path: "/fixture-only/mihomo", version: "v0.0.0-fixture", message: "纯合成状态，真实内核未启动" }),

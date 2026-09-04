@@ -9,7 +9,7 @@ const target = execFileSync("rustc", ["--print", "host-tuple"], { encoding: "utf
 const extension = target.includes("windows") ? ".exe" : "";
 const binary = join(root, "src-tauri", "binaries", `mihomo-${target}${extension}`);
 const config = join(root, "fixtures", "minimal.yaml");
-const dataDir = mkdtempSync(join(tmpdir(), "mihomo-codex-smoke-"));
+const dataDir = mkdtempSync(join(tmpdir(), "routedeck-smoke-"));
 
 try {
   const version = execFileSync(binary, ["-v"], { encoding: "utf8" }).trim();
@@ -21,4 +21,3 @@ try {
 } finally {
   rmSync(dataDir, { recursive: true, force: true });
 }
-

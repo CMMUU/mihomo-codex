@@ -23,6 +23,7 @@ export function visualRuleText(rule: VisualRule): string {
 }
 
 export function serializeUserRules(rules: UserRule[]): string {
+  // Retain the pre-RouteDeck export format for backward-compatible rule imports.
   return rules.map(({ id, enabled, rule, note }) =>
     `# mihomo-codex-rule: ${JSON.stringify({ id, enabled, note })}\n${rule}`,
   ).join("\n\n");

@@ -2,7 +2,7 @@
 import hashlib
 import http.client
 import json
-from io import BytesIO
+from io import BytesIO, StringIO
 from pathlib import Path
 import tempfile
 import unittest
@@ -15,7 +15,7 @@ import sync_gitee as sync
 HERE = Path(__file__).resolve().parent
 
 
-def metadata(private=False, owner="cmmuu", repo="mihomo-codex"):
+def metadata(private=False, owner="cmmuu", repo="routedeck"):
     return {"full_name": f"{owner}/{repo}", "owner": {"login": owner}, "private": private,
             "path": repo, "html_url": f"https://gitee.com/{owner}/{repo}"}
 
@@ -64,6 +64,28 @@ class SyncTests(unittest.TestCase):
         self.addCleanup(temp.cleanup)
         return Path(temp.name)
 
+    def test_repository_scope_is_exactly_the_renamed_project(self):
+        self.assertEqual(sync.REPOS, {"routedeck"})
+        for repo in ("mihomo-codex", "RouteDeck", "other", "../routedeck"):
+            with self.subTest(repo=repo), self.assertRaisesRegex(sync.SyncError, "Unsupported repository"):
+                sync.Sync(repo, None, None, self.fixture())
+
+    def test_git_credentials_only_allow_the_renamed_repository_paths(self):
+        environment = {"SYNC_REPO": "routedeck", "GITHUB_TOKEN": "offline-gh", "GITEE_TOKEN": "offline-ge"}
+        for host, owner, username, token in (("github.com", "CMMUU", "x-access-token", "offline-gh"),
+                                             ("gitee.com", "cmmuu", "cmmuu", "offline-ge")):
+            for path in (f"{owner}/routedeck.git", f"{owner}/mihomo-codex.git", f"{owner}/other.git",
+                         "other/routedeck.git", f"{owner}/routedeck.git/other"):
+                with self.subTest(host=host, path=path):
+                    output = StringIO()
+                    fields = StringIO(f"protocol=https\nhost={host}\npath={path}\n\n")
+                    with patch.dict(sync.os.environ, environment, clear=True), \
+                            patch.object(sync.sys, "argv", ["sync_gitee.py", "_git_credential", "get"]), \
+                            patch.object(sync.sys, "stdin", fields), patch.object(sync.sys, "stdout", output):
+                        sync.git_credential()
+                    expected = f"username={username}\npassword={token}\n\n" if path == f"{owner}/routedeck.git" else ""
+                    self.assertEqual(output.getvalue(), expected)
+
     def test_private_to_public_is_blocked_before_git_or_release_writes(self):
         class GH:
             def request(self, path):
@@ -71,7 +93,7 @@ class SyncTests(unittest.TestCase):
         class GE:
             def request(self, path):
                 return metadata(False)
-        job = sync.Sync("mihomo-codex", GH(), GE(), self.fixture())
+        job = sync.Sync("routedeck", GH(), GE(), self.fixture())
         with patch.object(sync, "git_run") as git:
             with self.assertRaisesRegex(sync.SyncError, "Private GitHub"):
                 job.sync_refs()
@@ -82,26 +104,26 @@ class SyncTests(unittest.TestCase):
         for target in (metadata(True, "other"), metadata(True, repo="other"), metadata("false")):
             with self.subTest(target=target):
                 with self.assertRaises(sync.SyncError):
-                    sync.validate_pair("mihomo-codex", source, target)
-        sync.validate_pair("mihomo-codex", source, metadata(True))
+                    sync.validate_pair("routedeck", source, target)
+        sync.validate_pair("routedeck", source, metadata(True))
 
     def test_gitee_repository_url_accepts_only_exact_web_or_clone_url(self):
         source = metadata(False, "CMMUU")
-        base = "https://gitee.com/cmmuu/mihomo-codex"
+        base = "https://gitee.com/cmmuu/routedeck"
         for url in (base, base + ".git"):
             with self.subTest(url=url):
-                sync.validate_pair("mihomo-codex", source, {**metadata(), "html_url": url})
+                sync.validate_pair("routedeck", source, {**metadata(), "html_url": url})
         for url in (base + ".git.attacker", base + ".git/other", base + "/", base + "?other=repo",
-                    "https://gitee.com/cmmuu/other", "https://gitee.com/other/mihomo-codex",
-                    "https://gitee.com.attacker/cmmuu/mihomo-codex", base.replace("https:", "http:")):
+                    "https://gitee.com/cmmuu/other", "https://gitee.com/other/routedeck",
+                    "https://gitee.com.attacker/cmmuu/routedeck", base.replace("https:", "http:")):
             with self.subTest(url=url):
                 with self.assertRaisesRegex(sync.SyncError, "target path"):
-                    sync.validate_pair("mihomo-codex", source, {**metadata(), "html_url": url})
+                    sync.validate_pair("routedeck", source, {**metadata(), "html_url": url})
 
     def test_public_repository_does_not_bypass_authenticated_owner_preflight(self):
         class GH:
             def request(self, path):
-                return metadata(False, "CMMUU", "mihomo-codex")
+                return metadata(False, "CMMUU", "routedeck")
         class GE:
             identity = {"login": "other-owner"}
             def request(self, path):
@@ -109,9 +131,9 @@ class SyncTests(unittest.TestCase):
                     if isinstance(self.identity, Exception):
                         raise self.identity
                     return self.identity
-                return metadata(False, repo="mihomo-codex")
+                return metadata(False, repo="routedeck")
         ge = GE()
-        job = sync.Sync("mihomo-codex", GH(), ge, self.fixture())
+        job = sync.Sync("routedeck", GH(), ge, self.fixture())
         with patch.object(sync, "git_run") as git:
             for identity in ({}, {"login": "other-owner"}, sync.SyncError("Bearer rejected")):
                 ge.identity = identity
@@ -119,7 +141,7 @@ class SyncTests(unittest.TestCase):
                     job.sync_refs()
             git.assert_not_called()
         ge.identity = {"login": "CMMUU"}
-        self.assertEqual(job.guard()["path"], "mihomo-codex")
+        self.assertEqual(job.guard()["path"], "routedeck")
 
     def test_redirect_never_forwards_auth_and_unknown_host_is_rejected(self):
         data = b"verified package"
@@ -129,7 +151,7 @@ class SyncTests(unittest.TestCase):
             Response(data),
         ])
         path = self.fixture() / "file.zip"
-        api.download("/repos/CMMUU/mihomo-codex/releases/assets/1", path, len(data), hashlib.sha256(data).hexdigest())
+        api.download("/repos/CMMUU/routedeck/releases/assets/1", path, len(data), hashlib.sha256(data).hexdigest())
         self.assertEqual(api.opener.requests[0].get_header("Authorization"), "Bearer offline-secret")
         self.assertIsNone(api.opener.requests[1].get_header("Authorization"))
         self.assertEqual(path.read_bytes(), data)
@@ -174,7 +196,7 @@ class SyncTests(unittest.TestCase):
                 if binary:
                     api.download("/asset", self.fixture() / "file.zip", 1, "a" * 64)
                 else:
-                    api.request("/repos/CMMUU/mihomo-codex")
+                    api.request("/repos/CMMUU/routedeck")
             self.assertNotIn("offline-secret", str(error.exception))
             self.assertNotIn("signed-url", str(error.exception))
 
@@ -183,7 +205,7 @@ class SyncTests(unittest.TestCase):
         source = root / "package.zip"
         source.write_bytes(b"good")
         ge = GiteeFixture(existing, copies)
-        job = sync.Sync("mihomo-codex", None, ge, root)
+        job = sync.Sync("routedeck", None, ge, root)
         job.guard = lambda: None
         item = {"path": source, "name": source.name, "size": 4, "sha256": hashlib.sha256(b"good").hexdigest()}
         return job, ge, item
@@ -253,7 +275,7 @@ class SyncTests(unittest.TestCase):
     def capacity_job(self, size=4, existing=(), max_asset=10, max_total=10, reserved=0):
         release = {"id": 1, "tag_name": "v1", "draft": False}
         source_asset = {"id": 7, "name": "package.zip", "size": size, "state": "uploaded",
-                        "url": "https://api.github.com/repos/CMMUU/mihomo-codex/releases/assets/7"}
+                        "url": "https://api.github.com/repos/CMMUU/routedeck/releases/assets/7"}
         class GH:
             def pages(self, path):
                 return [release] if path.endswith("/releases") else [source_asset]
@@ -262,7 +284,7 @@ class SyncTests(unittest.TestCase):
                 if path.endswith("/releases"):
                     return [{"id": 12, "tag_name": "v1"}] if existing else []
                 return list(existing)
-        job = sync.Sync("mihomo-codex", GH(), GE(), self.fixture(), max_asset, max_total, reserved)
+        job = sync.Sync("routedeck", GH(), GE(), self.fixture(), max_asset, max_total, reserved)
         job.guard = lambda: None
         return job, release
 
@@ -305,7 +327,7 @@ class SyncTests(unittest.TestCase):
     def test_privacy_recheck_blocks_upload_when_visibility_changes(self):
         job, ge, item = self.attachment_job()
         def changed():
-            sync.validate_pair("mihomo-codex", metadata(True, "CMMUU"), metadata(False))
+            sync.validate_pair("routedeck", metadata(True, "CMMUU"), metadata(False))
         job.guard = changed
         with self.assertRaisesRegex(sync.SyncError, "Private GitHub"):
             job.ensure_attachment(1, item)
@@ -327,11 +349,11 @@ class SyncTests(unittest.TestCase):
         api = sync.Api("github", "offline-secret")
         api.opener = Opener([])
         with self.assertRaisesRegex(sync.SyncError, "GitHub writes"):
-            api.request("/repos/CMMUU/mihomo-codex/releases", "DELETE")
+            api.request("/repos/CMMUU/routedeck/releases", "DELETE")
         self.assertEqual(api.opener.requests, [])
 
     def test_ref_sync_copies_all_heads_and_tags_without_force_or_remote_deletion(self):
-        job = sync.Sync("mihomo-codex", None, None, self.fixture())
+        job = sync.Sync("routedeck", None, None, self.fixture())
         job.guard = lambda: None
         calls = []
         refs = {"refs/heads/main": "a" * 40, "refs/heads/topic": "b" * 40, "refs/tags/v0.4.0": "c" * 40}
@@ -359,7 +381,7 @@ class SyncTests(unittest.TestCase):
             def pages(self, path):
                 return [{"id": 7, "name": "package.zip", "state": "uploaded", "size": 4,
                          "digest": "sha256:" + digest,
-                         "url": "https://api.github.com/repos/CMMUU/mihomo-codex/releases/assets/7"}]
+                         "url": "https://api.github.com/repos/CMMUU/routedeck/releases/assets/7"}]
             def download(self, path, destination, expected_size, expected_sha):
                 destination.parent.mkdir(parents=True, exist_ok=True)
                 destination.write_bytes(data)
@@ -387,7 +409,7 @@ class SyncTests(unittest.TestCase):
                     return [self.release] if self.release else []
                 return super().pages(path)
         ge = GE()
-        job = sync.Sync("mihomo-codex", GH(), ge, self.fixture())
+        job = sync.Sync("routedeck", GH(), ge, self.fixture())
         release = {"id": 1, "tag_name": "v0.4.0", "name": "准确标题", "body": "原正文\n第二行", "prerelease": False, "draft": False}
         with patch.object(sync, "git_run", return_value="a" * 40), patch("builtins.print"):
             job.sync_release(release, job.work / "fixture.git")
@@ -415,7 +437,7 @@ class SyncTests(unittest.TestCase):
                 result["body"] = (read_back_body if read_back_body is not None else result["body"]).replace("\r\n", "\n").replace("\n", "\r\n")
                 return result
         ge = GE()
-        job = sync.Sync("mihomo-codex", None, ge, self.fixture())
+        job = sync.Sync("routedeck", None, ge, self.fixture())
         job.guard = lambda: None
         job.source_assets = lambda release: []
         return job, ge, source

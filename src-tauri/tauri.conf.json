@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "mihomo-codex",
-  "version": "0.5.0",
+  "productName": "RouteDeck",
+  "version": "0.6.0",
   "identifier": "com.cmmuu.mihomodesktop",
   "build": {
     "beforeDevCommand": "npm run core:prepare && npm run dev",
@@ -14,7 +14,7 @@
     "windows": [
       {
         "label": "main",
-        "title": "mihomo-codex",
+        "title": "RouteDeck",
         "width": 1180,
         "height": 780,
         "minWidth": 900,
@@ -54,5 +54,5 @@
       "icons/icon.ico"
     ]
   },
-  "mainBinaryName": "mihomo-codex"
+  "mainBinaryName": "routedeck"
 }

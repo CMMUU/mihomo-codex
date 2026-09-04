@@ -846,7 +846,7 @@ mod tests {
     #[test]
     fn validation_timeout_kills_reaps_and_cleans_up_synthetic_child() {
         let root = std::env::temp_dir().join(format!(
-            "mihomo-codex-validation-timeout-{}",
+            "routedeck-validation-timeout-{}",
             uuid::Uuid::new_v4()
         ));
         std::fs::create_dir_all(&root).expect("fixture directory");

@@ -393,7 +393,7 @@ mod tests {
 
     #[test]
     fn activating_old_revision_rebuilds_current_global_overrides() {
-        let root = std::env::temp_dir().join(format!("mihomo-codex-activation-{}", Uuid::new_v4()));
+        let root = std::env::temp_dir().join(format!("routedeck-activation-{}", Uuid::new_v4()));
         let storage = AppStorage::from_root(root.clone()).expect("storage");
         let profile = storage
             .create_profile(

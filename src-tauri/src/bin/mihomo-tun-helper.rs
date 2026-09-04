@@ -1,11 +1,11 @@
 #[cfg(target_os = "macos")]
 fn main() {
-    mihomo_codex_lib::tun_service::daemon::run()
+    routedeck_lib::tun_service::daemon::run()
 }
 
 #[cfg(windows)]
 fn main() {
-    eprintln!("Windows TUN runs inside the elevated mihomo-codex application session. No TUN helper service is installed; quit the app from its tray menu and choose Run as administrator.");
+    eprintln!("Windows TUN runs inside the elevated RouteDeck application session. No TUN helper service is installed; quit the app from its tray menu and choose Run as administrator.");
     std::process::exit(1);
 }
 

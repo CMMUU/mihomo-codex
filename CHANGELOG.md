@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.6.0 - Unreleased
+
+- Rename the application, window and tray branding to RouteDeck, and the repository, npm/Cargo package and main executable to `routedeck`.
+- Update the helper's main-application lookup and the branding, release and repository-sync checks to the new names.
+- Retain `com.cmmuu.mihomodesktop`, the existing application-data directory, the `mihomo-tun-helper` binary and service identity, and the `# mihomo-codex-rule:` metadata format for compatibility.
+- Preserve historical release artifacts, compliance records and Figma references under their original names. No proxy, TUN or subscription behavior change is intended by this rename.
+- Track the rename as a new source version; cross-platform installer migration and live network acceptance are not implied by automated checks or a successful build.
+
 ## 0.5.0 - 2026-09-04
 
 - Add experimental Windows 10/11 TUN support through an elevated application session; the entire app runs as administrator without installing a persistent Windows service. Real TUN routing and recovery acceptance remain pending.

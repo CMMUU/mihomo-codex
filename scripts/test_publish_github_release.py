@@ -14,8 +14,8 @@ from publish_github_release import (ReleaseError, collect_packages, package_name
 
 
 COMMIT = "a" * 40
-TAG = "v0.5.0"
-ENDPOINT = "/repos/CMMUU/mihomo-codex/releases"
+TAG = "v0.6.0"
+ENDPOINT = "/repos/CMMUU/routedeck/releases"
 
 
 class FakeGitHub:
@@ -76,7 +76,7 @@ class ReleaseTests(unittest.TestCase):
         self.output = self.base / "release"
         for folder in ("src-tauri", "third-party", "docs"):
             (self.root / folder).mkdir(parents=True)
-        self.project = {"name": "mihomo-codex", "version": "0.5.0", "license": "GPL-3.0-only"}
+        self.project = {"name": "routedeck", "version": "0.6.0", "license": "GPL-3.0-only"}
         for path in ("package.json", "src-tauri/tauri.conf.json"):
             (self.root / path).write_text(json.dumps(self.project), encoding="utf-8")
         self.npm_lock = {"packages": {"": self.project, "node_modules/fixture": {
@@ -85,12 +85,12 @@ class ReleaseTests(unittest.TestCase):
         }}}
         (self.root / "package-lock.json").write_text(json.dumps(self.npm_lock), encoding="utf-8")
         (self.root / "src-tauri/Cargo.toml").write_text(
-            '[package]\nname = "mihomo-codex"\nversion = "0.5.0"\nlicense = "GPL-3.0-only"\n', encoding="utf-8")
+            '[package]\nname = "routedeck"\nversion = "0.6.0"\nlicense = "GPL-3.0-only"\n', encoding="utf-8")
         (self.root / "src-tauri/Cargo.lock").write_text(
             'version = 4\n[[package]]\nname = "fixture"\nversion = "1.0.0"\n'
             'source = "registry+https://github.com/rust-lang/crates.io-index"\n'
             'checksum = "' + "0" * 64 + '"\n', encoding="utf-8")
-        (self.root / "docs/发布说明-v0.5.0.md").write_text("Reviewed notes\n", encoding="utf-8")
+        (self.root / "docs/发布说明-v0.6.0.md").write_text("Reviewed notes\n", encoding="utf-8")
         self.license = b"GPL source license fixture\n"
         (self.root / "third-party/Mihomo-LICENSE.txt").write_bytes(self.license)
         (self.root / "LICENSE").write_bytes(self.license)
@@ -104,7 +104,7 @@ class ReleaseTests(unittest.TestCase):
             "targets": {},
         }
         self.write_manifest()
-        for platform, names in package_names("0.5.0").items():
+        for platform, names in package_names("0.6.0").items():
             folder = self.artifacts / platform / "bundle"
             folder.mkdir(parents=True)
             for name in names:
@@ -132,7 +132,7 @@ class ReleaseTests(unittest.TestCase):
         inputs = {path: sha256(root / path) for path in INPUT_PATHS}
         bom = {"bomFormat": "CycloneDX", "specVersion": "1.6", "version": 1,
                "metadata": {"component": {**self.project, "licenses": [{"expression": "GPL-3.0-only"}]},
-                            "properties": [{"name": f"mihomo-codex:input-sha256:{path}", "value": value}
+                            "properties": [{"name": f"routedeck:input-sha256:{path}", "value": value}
                                            for path, value in inputs.items()]},
                "components": components}
         (output / "sbom.cdx.json").write_text(json.dumps(bom), encoding="utf-8")
@@ -141,7 +141,7 @@ class ReleaseTests(unittest.TestCase):
     def test_complete_platform_set_produces_eighteen_assets_and_exact_checksums(self):
         assets, notes = self.prepare()
         self.assertEqual(len(assets), 18)
-        self.assertEqual((self.output / "mihomo-codex-LICENSE.txt").read_bytes(), self.license)
+        self.assertEqual((self.output / "RouteDeck-LICENSE.txt").read_bytes(), self.license)
         self.assertTrue({"sbom.cdx.json", "license-inventory.md"}.issubset({path.name for path in assets}))
         self.assertEqual(notes, "Reviewed notes\n")
         expected = {path.name: sha256(path) for path in assets if path.name != "SHA256SUMS.txt"}
@@ -149,6 +149,34 @@ class ReleaseTests(unittest.TestCase):
                   for line in (self.output / "SHA256SUMS.txt").read_text().splitlines()}
         self.assertEqual(actual, expected)
         self.assertNotIn(b"\r", (self.output / "SHA256SUMS.txt").read_bytes())
+
+    def test_bundle_names_preserve_product_name_case_for_every_platform(self):
+        self.assertEqual(package_names("0.6.0"), {
+            "macos-aarch64": ["RouteDeck_0.6.0_aarch64.dmg"],
+            "macos-x64": ["RouteDeck_0.6.0_x64.dmg"],
+            "windows-x64": ["RouteDeck_0.6.0_x64-setup.exe", "RouteDeck_0.6.0_x64_en-US.msi"],
+            "windows-arm64": ["RouteDeck_0.6.0_arm64-setup.exe", "RouteDeck_0.6.0_arm64_en-US.msi"],
+            "linux-x64": ["RouteDeck_0.6.0_amd64.AppImage", "RouteDeck_0.6.0_amd64.deb",
+                          "RouteDeck-0.6.0-1.x86_64.rpm"],
+            "linux-arm64": ["RouteDeck_0.6.0_aarch64.AppImage", "RouteDeck_0.6.0_arm64.deb",
+                            "RouteDeck-0.6.0-1.aarch64.rpm"],
+        })
+
+    def test_cargo_inventory_only_excludes_the_renamed_application(self):
+        self.assertEqual(cargo_components({"package": [{"name": "routedeck", "version": "0.6.0"}]},
+                                          {"packages": []}), [])
+        for name in ("mihomo-codex", "RouteDeck", "unreviewed-local-package"):
+            with self.subTest(name=name), self.assertRaisesRegex(ValueError, "Unreviewed local package"):
+                cargo_components({"package": [{"name": name, "version": "0.6.0"}]}, {"packages": []})
+
+    def test_legacy_named_sbom_cannot_be_used_for_the_renamed_release(self):
+        self.prepare()
+        path = self.output / "sbom.cdx.json"
+        bom = json.loads(path.read_text(encoding="utf-8"))
+        bom["metadata"]["component"]["name"] = "mihomo-codex"
+        path.write_text(json.dumps(bom), encoding="utf-8")
+        with self.assertRaisesRegex(ReleaseError, "application metadata"):
+            validate_compliance(self.root, self.output, "0.6.0")
 
     def test_missing_one_platform_package_prevents_staging(self):
         next((self.artifacts / "windows-x64").rglob("*.msi")).unlink()
@@ -160,14 +188,14 @@ class ReleaseTests(unittest.TestCase):
         sample = next((self.artifacts / "macos-x64").rglob("*.dmg"))
         (sample.parent.parent / sample.name).write_bytes(sample.read_bytes())
         with self.assertRaisesRegex(ReleaseError, "duplicated"):
-            collect_packages(self.artifacts, "0.5.0")
+            collect_packages(self.artifacts, "0.6.0")
 
     def test_tag_version_mismatch_is_rejected(self):
         with self.assertRaisesRegex(ReleaseError, "versions"):
-            validate_version(self.root, "v0.6.0")
+            validate_version(self.root, "v0.7.0")
 
     def test_missing_reviewed_notes_is_rejected(self):
-        (self.root / "docs/发布说明-v0.5.0.md").unlink()
+        (self.root / "docs/发布说明-v0.6.0.md").unlink()
         with self.assertRaisesRegex(ReleaseError, "Reviewed release notes"):
             self.prepare()
 
@@ -214,9 +242,9 @@ class ReleaseTests(unittest.TestCase):
         method, payload = api.writes[0]
         self.assertEqual(method, "PATCH")
         self.assertFalse(payload["draft"])
-        self.assertEqual(payload["name"], f"mihomo-codex {TAG}")
+        self.assertEqual(payload["name"], f"RouteDeck {TAG}")
         self.assertEqual(payload["body"], notes)
-        self.assertEqual(api.release["name"], f"mihomo-codex {TAG}")
+        self.assertEqual(api.release["name"], f"RouteDeck {TAG}")
         self.assertEqual(api.release["body"], notes)
 
     def test_upload_failure_leaves_draft_and_retry_resumes(self):
@@ -266,7 +294,7 @@ class ReleaseTests(unittest.TestCase):
         lock = self.root / "src-tauri/Cargo.lock"
         lock.write_text(lock.read_text(encoding="utf-8") + "\n# changed after generation\n", encoding="utf-8")
         with self.assertRaisesRegex(ReleaseError, "input checksums"):
-            validate_compliance(self.root, self.output, "0.5.0")
+            validate_compliance(self.root, self.output, "0.6.0")
 
     def test_sbom_cannot_omit_locked_dependency_even_with_current_input_hashes(self):
         self.prepare()
@@ -275,7 +303,7 @@ class ReleaseTests(unittest.TestCase):
         bom["components"].pop(0)
         path.write_text(json.dumps(bom), encoding="utf-8")
         with self.assertRaisesRegex(ReleaseError, "complete locked dependency set"):
-            validate_compliance(self.root, self.output, "0.5.0")
+            validate_compliance(self.root, self.output, "0.6.0")
 
     def test_sbom_duplicate_input_digest_is_rejected(self):
         self.prepare()
@@ -284,13 +312,13 @@ class ReleaseTests(unittest.TestCase):
         bom["metadata"]["properties"].append(bom["metadata"]["properties"][0])
         path.write_text(json.dumps(bom), encoding="utf-8")
         with self.assertRaisesRegex(ReleaseError, "input checksums"):
-            validate_compliance(self.root, self.output, "0.5.0")
+            validate_compliance(self.root, self.output, "0.6.0")
 
     def test_inventory_must_match_the_verified_sbom(self):
         self.prepare()
         (self.output / "license-inventory.md").write_text("Different inventory\n", encoding="utf-8")
         with self.assertRaisesRegex(ReleaseError, "inventory does not match"):
-            validate_compliance(self.root, self.output, "0.5.0")
+            validate_compliance(self.root, self.output, "0.6.0")
 
     def test_missing_generated_compliance_files_prevent_asset_staging(self):
         with self.assertRaisesRegex(ReleaseError, "Missing generated compliance asset"):
@@ -312,7 +340,7 @@ class ReleaseTests(unittest.TestCase):
     def test_existing_fifteen_asset_release_is_never_replaced_or_expanded(self):
         assets, notes = self.prepare()
         legacy = [path for path in assets if path.name not in {
-            "mihomo-codex-LICENSE.txt", "sbom.cdx.json", "license-inventory.md", "SHA256SUMS.txt",
+            "RouteDeck-LICENSE.txt", "sbom.cdx.json", "license-inventory.md", "SHA256SUMS.txt",
         }]
         legacy_dir = self.base / "legacy"
         legacy_dir.mkdir()

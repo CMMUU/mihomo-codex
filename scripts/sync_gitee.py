@@ -18,7 +18,7 @@ from urllib.parse import urlencode, urljoin, urlsplit
 from urllib.request import Request, HTTPRedirectHandler, build_opener
 import uuid
 
-REPOS = {"mihomo-codex"}
+REPOS = {"routedeck"}
 GH_OWNER, GE_OWNER = "CMMUU", "cmmuu"
 GH_API, GE_API = "https://api.github.com", "https://gitee.com/api/v5"
 MAX_JSON, MAX_ASSET = 8 * 1024 * 1024, 512 * 1024 * 1024

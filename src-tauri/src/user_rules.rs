@@ -19,6 +19,7 @@ use uuid::Uuid;
 const MAX_RULES: usize = 1_000;
 const MAX_TEXT_BYTES: usize = 512 * 1024;
 const MAX_HISTORY: usize = 20;
+// Keep the pre-RouteDeck wire format so existing rule exports still round-trip.
 const METADATA_PREFIX: &str = "# mihomo-codex-rule:";
 const EMPTY_SOURCE: &str = "proxies: []\nproxy-groups: []\nrules:\n  - MATCH,DIRECT\n";
 const BUILTIN_TARGETS: &[&str] = &[
@@ -1015,7 +1016,7 @@ mod tests {
     impl Fixture {
         fn new() -> Self {
             let root =
-                std::env::temp_dir().join(format!("mihomo-codex-user-rules-{}", Uuid::new_v4()));
+                std::env::temp_dir().join(format!("routedeck-user-rules-{}", Uuid::new_v4()));
             let storage = AppStorage::from_root(root.clone()).expect("storage");
             Self { root, storage }
         }

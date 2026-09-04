@@ -23,7 +23,7 @@ concurrency:
 jobs:
   sync:
     if: >-
-      github.repository == 'CMMUU/mihomo-codex' &&
+      github.repository == 'CMMUU/routedeck' &&
       (github.event_name != 'workflow_run' ||
       (github.event.workflow_run.conclusion == 'success' &&
       github.event.workflow_run.head_repository.full_name == github.repository &&
@@ -47,5 +47,5 @@ jobs:
           GITEE_MAX_TOTAL_BYTES: ${{ vars.GITEE_MAX_TOTAL_BYTES }}
           GITEE_OTHER_ATTACHMENT_BYTES: ${{ vars.GITEE_OTHER_ATTACHMENT_BYTES }}
         run: >-
-          python3 scripts/sync_gitee.py --repo mihomo-codex
+          python3 scripts/sync_gitee.py --repo routedeck
           --scope all --work-dir "$RUNNER_TEMP/gitee-sync" --apply

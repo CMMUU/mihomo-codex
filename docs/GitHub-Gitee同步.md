@@ -1,6 +1,8 @@
 # GitHub 与 Gitee 同步
 
-GitHub `CMMUU/mihomo-codex` 是代码和正式发行版的来源，Gitee `cmmuu/mihomo-codex` 保存对应副本。自 2026-09-04 起项目采用 GPL-3.0-only 开源，两站都应设为公开。先在 GitHub 完成测试、提交和发版，`Sync GitHub to Gitee` 工作流再复制全部分支、标签、已发布 Release 和原始附件。Gitee 同步不重新编译安装包。
+GitHub `CMMUU/routedeck` 是 RouteDeck 代码和正式发行版的来源，Gitee `cmmuu/routedeck` 保存对应副本。自 2026-09-04 起项目采用 GPL-3.0-only 开源，两站都应设为公开。先在 GitHub 完成测试、提交和发版，`Sync GitHub to Gitee` 工作流再复制全部分支、标签、已发布 Release 和原始附件。Gitee 同步不重新编译安装包。
+
+0.6.0 起项目名由 `mihomo-codex` 改为 `routedeck`。同步器按新仓库名进行精确目标校验，维护者应先完成两站仓库更名并核对 Git remotes，再运行写入同步。0.5.0 及更早版本的 Release 标题、原始附件名、内容和校验值保持不变；仓库更名不意味着新版本已经发布或同步成功。
 
 ## 自动触发
 
@@ -51,8 +53,8 @@ Gitee Release API 没有与 GitHub 草稿等价的上传阶段，因此新版本
 环境需要 Python 3.10+ 与 Git。通过安全的进程环境注入 `GITHUB_TOKEN`、`GITEE_TOKEN`，不要在命令行中填写令牌。
 
 ```sh
-python3 scripts/sync_gitee.py --repo mihomo-codex --scope all --work-dir /private/path/gitee-sync
-python3 scripts/sync_gitee.py --repo mihomo-codex --scope all --work-dir /private/path/gitee-sync --apply
+python3 scripts/sync_gitee.py --repo routedeck --scope all --work-dir /private/path/gitee-sync
+python3 scripts/sync_gitee.py --repo routedeck --scope all --work-dir /private/path/gitee-sync --apply
 ```
 
 第一条仅进行身份、隐私和容量预检；第二条允许写入已经核实的目标。缓存可能包含私有代码和安装包，应使用私有目录。发现缓存或目标同名内容冲突时不要强行覆盖，应查明源资产是否被替换。

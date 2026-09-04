@@ -45,7 +45,7 @@ mod tests {
     impl Fixture {
         fn new() -> Self {
             let root =
-                std::env::temp_dir().join(format!("mihomo-codex-appearance-{}", Uuid::new_v4()));
+                std::env::temp_dir().join(format!("routedeck-appearance-{}", Uuid::new_v4()));
             let storage = AppStorage::from_root(root.clone()).expect("fixture storage");
             Self { root, storage }
         }

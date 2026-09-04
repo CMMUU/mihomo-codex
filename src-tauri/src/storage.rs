@@ -473,7 +473,7 @@ mod tests {
     use uuid::Uuid;
 
     fn temp_root() -> std::path::PathBuf {
-        std::env::temp_dir().join(format!("mihomo-codex-storage-{}", Uuid::new_v4()))
+        std::env::temp_dir().join(format!("routedeck-storage-{}", Uuid::new_v4()))
     }
 
     #[test]

@@ -4,38 +4,61 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const read = (path) => readFileSync(join(root, path), "utf8");
+const read = (path) => readFileSync(join(root, path), "utf8").replaceAll("\r\n", "\n");
 const json = (path) => JSON.parse(read(path));
-const name = "mihomo-codex";
+const displayName = "RouteDeck";
+const slug = "routedeck";
+const libraryName = "routedeck_lib";
+// These identifiers are compatibility contracts, not user-facing branding.
 const identifier = "com.cmmuu.mihomodesktop";
+const helperName = "mihomo-tun-helper";
+const ruleMetadataPrefix = "# mihomo-codex-rule:";
 const pkg = json("package.json");
 const lock = json("package-lock.json");
 const config = json("src-tauri/tauri.conf.json");
 const cargo = read("src-tauri/Cargo.toml");
 const protocol = read("src-tauri/src/tun_service/protocol.rs");
 
-assert.equal(pkg.name, name);
-assert.equal(lock.name, name);
-assert.equal(lock.packages[""].name, name);
+assert.equal(pkg.name, slug);
+assert.equal(lock.name, slug);
+assert.equal(lock.packages[""].name, slug);
 assert.equal(lock.version, pkg.version);
 assert.equal(lock.packages[""].version, pkg.version);
-assert.equal(config.productName, name);
-assert.equal(config.mainBinaryName, name);
+assert.equal(config.productName, displayName);
+assert.equal(config.mainBinaryName, slug);
 assert.equal(config.version, pkg.version);
 assert.equal(config.identifier, identifier);
-assert.equal(config.app.windows.find((window) => window.label === "main").title, name);
-assert.ok(cargo.includes(`name = "${name}"`));
-assert.ok(cargo.includes(`default-run = "${name}"`));
+assert.equal(config.app.windows.find((window) => window.label === "main").title, displayName);
+assert.ok(cargo.includes(`[package]\nname = "${slug}"\nversion = "${pkg.version}"`));
+assert.ok(cargo.includes(`default-run = "${slug}"`));
 assert.ok(cargo.includes(`version = "${pkg.version}"`));
-assert.ok(cargo.includes('name = "mihomo_codex_lib"'));
-assert.ok(read("src-tauri/Cargo.lock").includes(`name = "${name}"\nversion = "${pkg.version}"`));
-assert.ok(read("src-tauri/src/main.rs").includes("mihomo_codex_lib::run()"));
-assert.ok(read("src-tauri/src/bin/mihomo-tun-helper.rs").includes("mihomo_codex_lib::tun_service::daemon::run()"));
-assert.ok(protocol.includes(`APP_BINARY_NAME: &str = "${name}"`));
+assert.ok(cargo.includes(`name = "${libraryName}"`));
+assert.ok(read("src-tauri/Cargo.lock").includes(`name = "${slug}"\nversion = "${pkg.version}"`));
+assert.ok(read("src-tauri/src/main.rs").includes(`${libraryName}::run()`));
+assert.ok(read(`src-tauri/src/bin/${helperName}.rs`).includes(`${libraryName}::tun_service::daemon::run()`));
+assert.ok(protocol.includes(`APP_BINARY_NAME: &str = "${slug}"`));
 assert.ok(protocol.includes(`LABEL: &str = "${identifier}.tun-helper"`));
-assert.ok(protocol.includes('HELPER_BINARY_NAME: &str = "mihomo-tun-helper"'));
-assert.ok(read("index.html").includes(`<title>${name}</title>`));
-assert.ok(read("src/main.ts").includes(`<strong>${name}</strong>`));
-assert.ok(read(`src-tauri/helper/${identifier}.tun-helper.plist`).includes(`<string>${identifier}</string>`));
+assert.ok(protocol.includes(`HELPER_BINARY_NAME: &str = "${helperName}"`));
+assert.ok(protocol.includes(`PLIST_NAME: &CStr = c"${identifier}.tun-helper.plist"`));
+assert.ok(read("index.html").includes(`<title>${displayName}</title>`));
+assert.ok(read("src/main.ts").includes(`<strong>${displayName}</strong>`));
+assert.ok(read("src-tauri/src/lib.rs").includes(`tooltip("${displayName}")`));
+assert.ok(read("src-tauri/src/lib.rs").includes(`product_name: "${displayName}"`));
+assert.ok(read("src-tauri/src/traffic_monitor.rs").includes(`Some("${displayName}")`));
+assert.ok(read("tests/fixtures/theme-preview.html").includes(`<title>${displayName} ·`));
+assert.ok(read("tests/fixtures/theme-preview.ts").includes(`productName: "${displayName}"`));
 
-console.log(`${name} ${pkg.version}: build names and retained compatibility identities match`);
+const plist = read(`src-tauri/helper/${identifier}.tun-helper.plist`);
+assert.ok(plist.includes(`<string>${identifier}</string>`));
+assert.ok(plist.includes(`<string>${identifier}.tun-helper</string>`));
+assert.ok(plist.includes(`<string>Contents/MacOS/${helperName}</string>`));
+assert.equal(
+  config.bundle.macOS.files[`Library/LaunchDaemons/${identifier}.tun-helper.plist`],
+  `helper/${identifier}.tun-helper.plist`,
+);
+assert.ok(read("src-tauri/src/storage.rs").includes(".app_data_dir()"));
+assert.ok(read("src-tauri/src/user_rules.rs").includes(`METADATA_PREFIX: &str = "${ruleMetadataPrefix}"`));
+assert.ok(read("src/rule-manager.ts").includes(ruleMetadataPrefix));
+assert.ok(read("tests/fixtures/theme-preview.ts").includes(ruleMetadataPrefix));
+
+console.log(`${displayName} ${pkg.version}: display brand, project slug, and retained compatibility identities match`);

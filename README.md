@@ -1,12 +1,13 @@
-# mihomo-codex
+# RouteDeck
 
-基于 Rust + Tauri 2 的轻量跨平台 Mihomo 客户端，目标平台为 macOS、Linux 和 Windows。
+基于 Rust + Tauri 2 的轻量跨平台 Mihomo 客户端，目标平台为 macOS、Linux 和 Windows。项目原名 `mihomo-codex`，从 0.6.0 开始使用独立品牌 RouteDeck；Mihomo 仍是底层代理内核。
 
 ## 源码与下载
 
-- 源码仓库：[GitHub](https://github.com/CMMUU/mihomo-codex) · [Gitee](https://gitee.com/cmmuu/mihomo-codex)
-- 版本发布：[GitHub Releases](https://github.com/CMMUU/mihomo-codex/releases) · [Gitee Releases](https://gitee.com/cmmuu/mihomo-codex/releases)
-- 当前版本 [v0.5.0](https://github.com/CMMUU/mihomo-codex/releases/tag/v0.5.0) 改进 Windows 权限提示、内核进程回收、系统代理恢复与连通性诊断；安装包和 SHA-256 校验文件以 Release 页面实际附件为准。
+- 源码仓库：[GitHub](https://github.com/CMMUU/routedeck) · [Gitee](https://gitee.com/cmmuu/routedeck)
+- 版本发布：[GitHub Releases](https://github.com/CMMUU/routedeck/releases) · [Gitee Releases](https://gitee.com/cmmuu/routedeck/releases)
+- 当前源码版本为 **0.6.0（尚未发布）**，包含 RouteDeck 更名；见 [v0.6.0 发布说明草稿](docs/发布说明-v0.6.0.md)。源码版本不表示对应安装包已公开发布。
+- 最近已发布版本 [v0.5.0](https://github.com/CMMUU/routedeck/releases/tag/v0.5.0) 仍使用 `mihomo-codex` 名称，改进 Windows 权限提示、内核进程回收、系统代理恢复与连通性诊断；安装包和 SHA-256 校验文件以 Release 页面实际附件为准，历史附件文件名保持不变。
 - Windows 10/11 TUN 为实验性功能，已实现管理员会话运行方式，尚未完成真实 TUN 路由与恢复验收。各平台的安装、构建和网络接管验证范围见 [v0.5.0 发布说明](docs/发布说明-v0.5.0.md)。
 - 自 2026-09-04 起，应用源码按 [GNU GPL v3（GPL-3.0-only）](LICENSE) 开源。第三方依赖沿用各自许可证，见 [第三方声明](THIRD_PARTY_NOTICES.md)、[v0.5.0 许可证清单](docs/compliance/v0.5.0/license-inventory.md) 和 [SBOM](docs/compliance/v0.5.0/sbom.cdx.json)。`package.json` 中的 `private: true` 仅防止意外发布到 npm，不限制源码访问或 GPL 授予的权利。
 
@@ -14,6 +15,7 @@
 
 - [软件设计说明书（SDD）](docs/软件设计说明书.md)
 - [架构与里程碑](docs/架构与里程碑.md)
+- [v0.6.0 发布说明草稿（RouteDeck 更名）](docs/发布说明-v0.6.0.md)
 - [v0.5.0 发布说明](docs/发布说明-v0.5.0.md)
 - [v0.4.0 发布说明](docs/发布说明-v0.4.0.md)
 - [规则管理与升级验证](docs/规则管理与升级验证.md)
@@ -67,10 +69,17 @@
 
 ## 更名与升级兼容
 
-- 从 0.3.1 起，项目目录、应用名称和主可执行文件统一为 `mihomo-codex`。
-- 保留 `com.cmmuu.mihomodesktop` bundle identifier、原用户数据目录及 TUN helper 服务标识，以复用订阅、设置和服务授权。
+- 从 0.6.0 起，应用、窗口和托盘显示名为 `RouteDeck`，项目／仓库、npm／Cargo 包和主可执行文件使用 `routedeck`（Windows 为 `routedeck.exe`）。0.3.1–0.5.0 的名称为 `mihomo-codex`。
+- 保留 `com.cmmuu.mihomodesktop` bundle identifier 及其原用户数据目录，不因品牌更名迁移或重置订阅、设置和历史版本。
+- 保留 `mihomo-tun-helper` 可执行文件和 `com.cmmuu.mihomodesktop.tun-helper` 服务／plist 标识；helper 对主程序的查找随新二进制名更新。
+- 规则导出与导入继续使用 `# mihomo-codex-rule:` 元数据前缀，以兼容旧版导出的启停、备注和排序数据。
+- 保留上述兼容身份不等于已完成所有安装器与启动项迁移验收。升级前退出旧应用并备份数据；不要同时运行旧版与 RouteDeck，或同时开启多个客户端的系统代理／TUN。各平台覆盖安装、快捷方式、登录启动项及 helper 授权需单独验证。
+- Windows NSIS 的卸载项以 `productName` 为键，`RouteDeck` 与旧 `mihomo-codex` 不同，不能仅凭 bundle identifier 保证自动覆盖升级。建议先关闭旧版登录启动并退出，备份配置，卸载旧版时不要选择删除应用数据，再安装 RouteDeck；确认数据正常后按需重新启用登录启动。
+- Linux DEB／RPM 的内部包名由显示名称转换为 `route-deck`，不同于旧 `mihomo-codex`，也不同于主程序名 `routedeck`。先卸载旧包并保留用户配置，再安装新包，以免共享文件路径冲突。macOS 已安装的旧 TUN helper 可能仍按旧主程序名查找，升级后如不可用需重新安装／修复 helper 并验证授权。
 - 历史验证记录与 Figma 原始证据仍保留旧名称；更名不代表重新完成所有平台网络验收。
 - 发布前运行 `npm run test:branding`，检查构建名称与兼容身份一致性。
+
+详细迁移注意事项见 [v0.6.0 发布说明草稿](docs/发布说明-v0.6.0.md)。
 
 ## Windows 使用说明
 
@@ -123,4 +132,4 @@ src-tauri/binaries/mihomo-<target-triple>
 
 构建脚本校验固定压缩资产的 SHA-256，并验证当前平台的 `mihomo -v` 输出。CI 在 macOS、Windows 和 Linux 原生 runner 执行。
 
-推送稳定版本标签 `vX.Y.Z` 后，`Release bundles` 在六个平台全部构建成功后自动创建 GitHub Release。标签必须与 `package.json`、Tauri 和 Cargo 版本一致，并提交对应的 `docs/发布说明-vX.Y.Z.md`。发布作业从该标签的锁文件重新生成依赖 SBOM 与许可证清单，核对输入 SHA-256 和项目许可元数据；收齐 12 个安装包、Mihomo GPL 许可证及上游源码、项目 `mihomo-codex-LICENSE.txt`、`sbom.cdx.json`、`license-inventory.md`，加上 `SHA256SUMS.txt` 共 18 个附件，上传及 SHA-256 校验全部通过后才公开草稿。重复运行会复用内容相同的附件，遇到同名不同内容则停止，不覆盖原发布包。此规则适用于后续新发行版，v0.5.0 已发布的 15 个附件保持原样。手动 `workflow_dispatch` 只构建并保留 Actions artifacts，不创建发行版。
+推送稳定版本标签 `vX.Y.Z` 后，`Release bundles` 在六个平台全部构建成功后自动创建 GitHub Release。标签必须与 `package.json`、Tauri 和 Cargo 版本一致，并提交对应的 `docs/发布说明-vX.Y.Z.md`。发布作业从该标签的锁文件重新生成依赖 SBOM 与许可证清单，核对输入 SHA-256 和项目许可元数据；收齐 12 个安装包、Mihomo GPL 许可证及上游源码、项目 `RouteDeck-LICENSE.txt`、`sbom.cdx.json`、`license-inventory.md`，加上 `SHA256SUMS.txt` 共 18 个附件，上传及 SHA-256 校验全部通过后才公开草稿。重复运行会复用内容相同的附件，遇到同名不同内容则停止，不覆盖原发布包。此规则适用于后续新发行版，v0.5.0 已发布的 15 个附件保持原样。手动 `workflow_dispatch` 只构建并保留 Actions artifacts，不创建发行版。

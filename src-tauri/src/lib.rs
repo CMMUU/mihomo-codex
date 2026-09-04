@@ -82,7 +82,7 @@ fn dto(error: AppError) -> AppErrorDto {
 #[tauri::command]
 fn app_info() -> AppInfo {
     AppInfo {
-        product_name: env!("CARGO_PKG_NAME"),
+        product_name: "RouteDeck",
         version: env!("CARGO_PKG_VERSION"),
         target_os: std::env::consts::OS,
         target_arch: std::env::consts::ARCH,
@@ -821,7 +821,7 @@ pub fn run() {
             let stop_item = MenuItem::with_id(app, "stop", "停止 Mihomo", true, None::<&str>)?;
             let quit_item = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
             let menu = Menu::with_items(app, &[&show_item, &stop_item, &quit_item])?;
-            let mut tray = TrayIconBuilder::with_id(TRAY_ID).tooltip("mihomo-codex");
+            let mut tray = TrayIconBuilder::with_id(TRAY_ID).tooltip("RouteDeck");
             if let Some(icon) = app.default_window_icon() {
                 tray = tray.icon(icon.clone());
             }

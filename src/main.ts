@@ -123,7 +123,7 @@ app.innerHTML = `
     <aside class="sidebar">
       <div class="brand">
         <div class="brand-mark"><img src="${appIconUrl}" alt="" width="40" height="40" /></div>
-        <div><strong>mihomo-codex</strong><span>轻量稳定代理客户端</span></div>
+        <div><strong>RouteDeck</strong><span>轻量稳定代理客户端</span></div>
       </div>
       <nav class="nav-list" aria-label="主导航">
         <button class="nav-item is-active" data-view="overview" aria-current="page"><span>●</span>概览</button>
@@ -152,7 +152,7 @@ app.innerHTML = `
         <div class="application-status-summary">
           <div class="application-status-heading">
             <span class="application-status-dot" id="application-status-dot"></span>
-            <div><p class="eyebrow">mihomo-codex</p><h1 id="page-title">应用状态</h1></div>
+            <div><p class="eyebrow">RouteDeck</p><h1 id="page-title">应用状态</h1></div>
           </div>
           <div class="application-status-meta" aria-live="polite">
             <strong id="application-runtime-state">正在读取</strong>
@@ -1244,7 +1244,7 @@ async function ensureTunHelperReady(): Promise<boolean> {
       return false;
     }
     await action("", () => api.openTunHelperSettings());
-    toast("请在系统设置中批准 mihomo-codex TUN Helper，然后再次开启 TUN", "error");
+    toast("请在系统设置中批准 RouteDeck TUN Helper，然后再次开启 TUN", "error");
     return false;
   }
   if (helper.state !== "ready") {
