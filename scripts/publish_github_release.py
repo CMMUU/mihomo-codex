@@ -9,11 +9,14 @@ from pathlib import Path
 import re
 import shutil
 import subprocess
+import sys
 import tarfile
 import tempfile
 import tomllib
 from urllib.parse import quote, urlparse
 from urllib.request import HTTPRedirectHandler, Request, build_opener
+
+from generate_compliance import INPUT_PATHS, markdown as compliance_markdown, property_value
 
 
 REPOSITORY = "CMMUU/mihomo-codex"
@@ -98,7 +101,67 @@ def download_source(url, destination):
             output.write(block)
 
 
-def prepare_assets(root, artifacts, output, tag, fetch_source=download_source):
+def generate_compliance(root, output):
+    result = subprocess.run(
+        [sys.executable, str(root / "scripts/generate_compliance.py"), "--output-dir", str(output)],
+        cwd=root, check=False,
+    )
+    if result.returncode:
+        raise ReleaseError("Dependency SBOM generation failed; no release was published")
+
+
+def validate_compliance(root, output, version):
+    package = json.loads((root / "package.json").read_text(encoding="utf-8"))
+    npm_lock = json.loads((root / "package-lock.json").read_text(encoding="utf-8"))
+    cargo = tomllib.loads((root / "src-tauri/Cargo.toml").read_text(encoding="utf-8"))["package"]
+    for source in (package, npm_lock["packages"][""], cargo):
+        if source.get("version") != version or source.get("license") != "GPL-3.0-only":
+            raise ReleaseError("Application version and GPL-3.0-only license metadata must agree")
+    # The checked-in GPL text is pinned by the core manifest and copied verbatim
+    # to the project's LICENSE. A short label or placeholder is insufficient.
+    if (root / "LICENSE").read_bytes() != (root / "third-party/Mihomo-LICENSE.txt").read_bytes():
+        raise ReleaseError("Application GPL license text does not match the complete pinned text")
+    for name in ("sbom.cdx.json", "license-inventory.md"):
+        path = output / name
+        if not path.is_file() or path.is_symlink() or not path.stat().st_size:
+            raise ReleaseError(f"Missing generated compliance asset: {name}")
+    bom = json.loads((output / "sbom.cdx.json").read_text(encoding="utf-8"))
+    component = bom.get("metadata", {}).get("component", {})
+    if (bom.get("bomFormat") != "CycloneDX" or bom.get("specVersion") != "1.6"
+            or component.get("name") != "mihomo-codex" or component.get("version") != version
+            or component.get("licenses") != [{"expression": "GPL-3.0-only"}]):
+        raise ReleaseError("Generated SBOM application metadata does not match the release")
+    inputs = {path: sha256(root / path) for path in INPUT_PATHS}
+    prefix = "mihomo-codex:input-sha256:"
+    declared = [item for item in bom["metadata"].get("properties", []) if item["name"].startswith(prefix)]
+    recorded = {item["name"][len(prefix):]: item["value"] for item in declared}
+    if len(recorded) != len(declared) or recorded != inputs:
+        raise ReleaseError("Generated SBOM input checksums do not match the checked-out tag sources")
+    cargo_lock = tomllib.loads((root / "src-tauri/Cargo.lock").read_text(encoding="utf-8"))
+    core = json.loads((root / "src-tauri/core-manifest.json").read_text(encoding="utf-8"))
+    expected = {
+        ("cargo", item["name"], item["version"])
+        for item in cargo_lock["package"] if item.get("source")
+    }
+    expected.update(("npm", location, item["version"])
+                    for location, item in npm_lock["packages"].items() if location)
+    expected.add(("bundled-core", "mihomo", core["version"]))
+    actual = []
+    for item in bom.get("components", []):
+        ecosystem = property_value(item, "mihomo-codex:ecosystem")
+        name = property_value(item, "mihomo-codex:lockfile-location") if ecosystem == "npm" else item["name"]
+        if not item.get("licenses") or not property_value(item, "mihomo-codex:declared-license").strip():
+            raise ReleaseError("Generated SBOM contains a dependency without a license declaration")
+        actual.append((ecosystem, name, item["version"]))
+    if len(actual) != len(expected) or set(actual) != expected:
+        raise ReleaseError("Generated SBOM does not cover the complete locked dependency set")
+    inventory = (output / "license-inventory.md").read_text(encoding="utf-8")
+    if inventory != compliance_markdown(bom, inputs):
+        raise ReleaseError("License inventory does not match its verified SBOM")
+
+
+def prepare_assets(root, artifacts, output, tag, fetch_source=download_source,
+                   generate_inventory=generate_compliance):
     version, notes = validate_version(root, tag)
     packages = collect_packages(artifacts, version)
     manifest = json.loads((root / "src-tauri/core-manifest.json").read_text(encoding="utf-8"))
@@ -113,6 +176,13 @@ def prepare_assets(root, artifacts, output, tag, fetch_source=download_source):
     output.mkdir(parents=True, exist_ok=True)
     if any(output.iterdir()):
         raise ReleaseError("The release staging directory must be empty")
+    with tempfile.TemporaryDirectory(prefix="mihomo-compliance-") as folder:
+        compliance = Path(folder)
+        generate_inventory(root, compliance)
+        validate_compliance(root, compliance, version)
+        for name in ("sbom.cdx.json", "license-inventory.md"):
+            shutil.copyfile(compliance / name, output / name)
+    shutil.copyfile(root / "LICENSE", output / "mihomo-codex-LICENSE.txt")
     for path in packages:
         shutil.copyfile(path, output / path.name)
     shutil.copyfile(license_path, output / f"Mihomo-LICENSE-v{core}.txt")
@@ -257,6 +327,11 @@ def main():
                                      capture_output=True, text=True, check=False)
         if checked_out.returncode or checked_out.stdout.strip() != args.commit:
             raise ReleaseError("The checked-out source does not match the build commit")
+        clean_source = subprocess.run(
+            ["git", "-C", str(root), "diff", "--quiet", "HEAD", "--"], check=False,
+        )
+        if clean_source.returncode:
+            raise ReleaseError("Tracked source changes must not be included in a tagged release")
     assets, notes = prepare_assets(root, args.artifacts, args.output, args.tag)
     if args.apply:
         publish(GitHub(), args.tag, args.commit, assets, notes)

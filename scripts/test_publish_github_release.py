@@ -6,8 +6,11 @@ import tarfile
 import tempfile
 import unittest
 
+from generate_compliance import (INPUT_PATHS, cargo_components, core_component,
+                                 markdown as compliance_markdown, npm_components)
 from publish_github_release import (ReleaseError, collect_packages, package_names,
-                                    prepare_assets, publish, sha256, validate_version)
+                                    prepare_assets, publish, sha256, validate_version,
+                                    validate_compliance)
 
 
 COMMIT = "a" * 40
@@ -73,16 +76,32 @@ class ReleaseTests(unittest.TestCase):
         self.output = self.base / "release"
         for folder in ("src-tauri", "third-party", "docs"):
             (self.root / folder).mkdir(parents=True)
+        self.project = {"name": "mihomo-codex", "version": "0.5.0", "license": "GPL-3.0-only"}
         for path in ("package.json", "src-tauri/tauri.conf.json"):
-            (self.root / path).write_text(json.dumps({"version": "0.5.0"}), encoding="utf-8")
-        (self.root / "src-tauri/Cargo.toml").write_text('[package]\nversion = "0.5.0"\n', encoding="utf-8")
+            (self.root / path).write_text(json.dumps(self.project), encoding="utf-8")
+        self.npm_lock = {"packages": {"": self.project, "node_modules/fixture": {
+            "version": "1.0.0", "license": "MIT", "integrity": "sha256-" + "A" * 43 + "=",
+            "resolved": "https://registry.npmjs.org/fixture/-/fixture-1.0.0.tgz",
+        }}}
+        (self.root / "package-lock.json").write_text(json.dumps(self.npm_lock), encoding="utf-8")
+        (self.root / "src-tauri/Cargo.toml").write_text(
+            '[package]\nname = "mihomo-codex"\nversion = "0.5.0"\nlicense = "GPL-3.0-only"\n', encoding="utf-8")
+        (self.root / "src-tauri/Cargo.lock").write_text(
+            'version = 4\n[[package]]\nname = "fixture"\nversion = "1.0.0"\n'
+            'source = "registry+https://github.com/rust-lang/crates.io-index"\n'
+            'checksum = "' + "0" * 64 + '"\n', encoding="utf-8")
         (self.root / "docs/发布说明-v0.5.0.md").write_text("Reviewed notes\n", encoding="utf-8")
         self.license = b"GPL source license fixture\n"
         (self.root / "third-party/Mihomo-LICENSE.txt").write_bytes(self.license)
+        (self.root / "LICENSE").write_bytes(self.license)
         self.manifest = {
             "version": "1.19.30", "license": "GPL-3.0",
             "licenseSha256": hashlib.sha256(self.license).hexdigest(),
             "sourceUrl": "https://github.com/MetaCubeX/mihomo/archive/refs/tags/v1.19.30.tar.gz",
+            "repository": "https://github.com/MetaCubeX/mihomo",
+            "licenseUrl": "https://raw.githubusercontent.com/MetaCubeX/mihomo/v1.19.30/LICENSE",
+            "releaseBaseUrl": "https://github.com/MetaCubeX/mihomo/releases/download/v1.19.30",
+            "targets": {},
         }
         self.write_manifest()
         for platform, names in package_names("0.5.0").items():
@@ -102,11 +121,28 @@ class ReleaseTests(unittest.TestCase):
             archive.addfile(member, io.BytesIO(self.license))
 
     def prepare(self):
-        return prepare_assets(self.root, self.artifacts, self.output, TAG, self.fetch_source)
+        return prepare_assets(self.root, self.artifacts, self.output, TAG, self.fetch_source, self.generate_inventory)
 
-    def test_complete_platform_set_produces_fifteen_assets_and_exact_checksums(self):
+    def generate_inventory(self, root, output):
+        """Offline metadata fixture: exercise real inventory serialization without Cargo/network."""
+        import tomllib
+        lock = tomllib.loads((root / "src-tauri/Cargo.lock").read_text(encoding="utf-8"))
+        metadata = {"packages": [{**lock["package"][0], "license": "MIT"}]}
+        components = cargo_components(lock, metadata) + npm_components(self.npm_lock) + [core_component(self.manifest)]
+        inputs = {path: sha256(root / path) for path in INPUT_PATHS}
+        bom = {"bomFormat": "CycloneDX", "specVersion": "1.6", "version": 1,
+               "metadata": {"component": {**self.project, "licenses": [{"expression": "GPL-3.0-only"}]},
+                            "properties": [{"name": f"mihomo-codex:input-sha256:{path}", "value": value}
+                                           for path, value in inputs.items()]},
+               "components": components}
+        (output / "sbom.cdx.json").write_text(json.dumps(bom), encoding="utf-8")
+        (output / "license-inventory.md").write_text(compliance_markdown(bom, inputs), encoding="utf-8", newline="\n")
+
+    def test_complete_platform_set_produces_eighteen_assets_and_exact_checksums(self):
         assets, notes = self.prepare()
-        self.assertEqual(len(assets), 15)
+        self.assertEqual(len(assets), 18)
+        self.assertEqual((self.output / "mihomo-codex-LICENSE.txt").read_bytes(), self.license)
+        self.assertTrue({"sbom.cdx.json", "license-inventory.md"}.issubset({path.name for path in assets}))
         self.assertEqual(notes, "Reviewed notes\n")
         expected = {path.name: sha256(path) for path in assets if path.name != "SHA256SUMS.txt"}
         actual = {line.split("  ", 1)[1]: line.split("  ", 1)[0]
@@ -155,7 +191,7 @@ class ReleaseTests(unittest.TestCase):
         assets, notes = self.prepare()
         api = FakeGitHub()
         publish(api, TAG, COMMIT, assets, notes)
-        self.assertEqual(len(api.uploads), 15)
+        self.assertEqual(len(api.uploads), 18)
         self.assertTrue(api.writes[0][1]["draft"])
         self.assertFalse(api.writes[-1][1]["draft"])
         self.assertFalse(api.release["draft"])
@@ -193,7 +229,7 @@ class ReleaseTests(unittest.TestCase):
         api.fail_upload = False
         api.upload(1, assets[0])
         publish(api, TAG, COMMIT, assets, notes)
-        self.assertEqual(len(api.uploads), 15)
+        self.assertEqual(len(api.uploads), 18)
         self.assertFalse(api.release["draft"])
 
     def test_existing_content_conflict_blocks_every_upload_and_metadata_change(self):
@@ -224,6 +260,74 @@ class ReleaseTests(unittest.TestCase):
             publish(api, TAG, COMMIT, assets, notes)
         self.assertTrue(api.release["draft"])
         self.assertEqual(len(api.writes), 1)
+
+    def test_stale_sbom_cannot_describe_different_lockfile_contents(self):
+        self.prepare()
+        lock = self.root / "src-tauri/Cargo.lock"
+        lock.write_text(lock.read_text(encoding="utf-8") + "\n# changed after generation\n", encoding="utf-8")
+        with self.assertRaisesRegex(ReleaseError, "input checksums"):
+            validate_compliance(self.root, self.output, "0.5.0")
+
+    def test_sbom_cannot_omit_locked_dependency_even_with_current_input_hashes(self):
+        self.prepare()
+        path = self.output / "sbom.cdx.json"
+        bom = json.loads(path.read_text(encoding="utf-8"))
+        bom["components"].pop(0)
+        path.write_text(json.dumps(bom), encoding="utf-8")
+        with self.assertRaisesRegex(ReleaseError, "complete locked dependency set"):
+            validate_compliance(self.root, self.output, "0.5.0")
+
+    def test_sbom_duplicate_input_digest_is_rejected(self):
+        self.prepare()
+        path = self.output / "sbom.cdx.json"
+        bom = json.loads(path.read_text(encoding="utf-8"))
+        bom["metadata"]["properties"].append(bom["metadata"]["properties"][0])
+        path.write_text(json.dumps(bom), encoding="utf-8")
+        with self.assertRaisesRegex(ReleaseError, "input checksums"):
+            validate_compliance(self.root, self.output, "0.5.0")
+
+    def test_inventory_must_match_the_verified_sbom(self):
+        self.prepare()
+        (self.output / "license-inventory.md").write_text("Different inventory\n", encoding="utf-8")
+        with self.assertRaisesRegex(ReleaseError, "inventory does not match"):
+            validate_compliance(self.root, self.output, "0.5.0")
+
+    def test_missing_generated_compliance_files_prevent_asset_staging(self):
+        with self.assertRaisesRegex(ReleaseError, "Missing generated compliance asset"):
+            prepare_assets(self.root, self.artifacts, self.output, TAG, self.fetch_source,
+                           lambda root, output: None)
+        self.assertEqual(list(self.output.iterdir()), [])
+
+    def test_project_gpl_metadata_and_complete_license_text_are_required(self):
+        (self.root / "LICENSE").write_bytes(b"GPL-3.0-only")
+        with self.assertRaisesRegex(ReleaseError, "complete pinned text"):
+            self.prepare()
+
+    def test_mismatched_npm_license_is_rejected(self):
+        self.npm_lock["packages"][""]["license"] = "MIT"
+        (self.root / "package-lock.json").write_text(json.dumps(self.npm_lock), encoding="utf-8")
+        with self.assertRaisesRegex(ReleaseError, "license metadata"):
+            self.prepare()
+
+    def test_existing_fifteen_asset_release_is_never_replaced_or_expanded(self):
+        assets, notes = self.prepare()
+        legacy = [path for path in assets if path.name not in {
+            "mihomo-codex-LICENSE.txt", "sbom.cdx.json", "license-inventory.md", "SHA256SUMS.txt",
+        }]
+        legacy_dir = self.base / "legacy"
+        legacy_dir.mkdir()
+        checksums = legacy_dir / "SHA256SUMS.txt"
+        checksums.write_text("".join(f"{sha256(path)}  {path.name}\n" for path in legacy), encoding="utf-8")
+        api = FakeGitHub()
+        publish(api, TAG, COMMIT, [*legacy, checksums], notes)
+        self.assertEqual(len(api.assets), 15)
+        api.uploads.clear()
+        api.writes.clear()
+        with self.assertRaisesRegex(ReleaseError, "conflict"):
+            publish(api, TAG, COMMIT, assets, notes)
+        self.assertEqual(len(api.assets), 15)
+        self.assertEqual(api.uploads, [])
+        self.assertEqual(api.writes, [])
 
 
 if __name__ == "__main__":

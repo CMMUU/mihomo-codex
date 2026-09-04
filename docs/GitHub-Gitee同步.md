@@ -1,6 +1,6 @@
 # GitHub 与 Gitee 同步
 
-GitHub `CMMUU/mihomo-codex` 是代码和正式发行版的来源，Gitee `cmmuu/mihomo-codex` 保存对应副本。先在 GitHub 完成测试、提交和发版，`Sync GitHub to Gitee` 工作流再复制全部分支、标签、已发布 Release 和原始附件。Gitee 同步不重新编译安装包。
+GitHub `CMMUU/mihomo-codex` 是代码和正式发行版的来源，Gitee `cmmuu/mihomo-codex` 保存对应副本。自 2026-09-04 起项目采用 GPL-3.0-only 开源，两站都应设为公开。先在 GitHub 完成测试、提交和发版，`Sync GitHub to Gitee` 工作流再复制全部分支、标签、已发布 Release 和原始附件。Gitee 同步不重新编译安装包。
 
 ## 自动触发
 
@@ -16,7 +16,7 @@ GitHub `CMMUU/mihomo-codex` 是代码和正式发行版的来源，Gitee `cmmuu/
 
 ## 首次配置
 
-1. 创建 Gitee 目标仓库，保持与源仓库一致的私有性，默认分支设为 `main`。空仓库不要额外初始化 README，以免引入分叉历史。
+1. 创建 Gitee 目标仓库，将 GitHub 与 Gitee 都设为公开，默认分支设为 `main`。空仓库不要额外初始化 README，以免引入分叉历史。
 2. 在 GitHub 仓库的 Actions Secrets 配置 `GITEE_TOKEN`，赋予目标仓库 Git 推送、Release/附件写入及 `/user` 读取所需权限。身份必须是 `cmmuu`。GitHub 侧使用仅 `contents: read` 的内置 `GITHUB_TOKEN`。
 3. 手动运行同步工作流，查看引用校验与每个版本的附件验证结果。离线测试通过不等同于远端同步成功。
 

@@ -4,11 +4,11 @@
 
 ## 源码与下载
 
-- 私有源码仓库：[CMMUU/mihomo-codex](https://github.com/CMMUU/mihomo-codex)
-- 版本发布：[GitHub Releases](https://github.com/CMMUU/mihomo-codex/releases)
+- 源码仓库：[GitHub](https://github.com/CMMUU/mihomo-codex) · [Gitee](https://gitee.com/cmmuu/mihomo-codex)
+- 版本发布：[GitHub Releases](https://github.com/CMMUU/mihomo-codex/releases) · [Gitee Releases](https://gitee.com/cmmuu/mihomo-codex/releases)
 - 当前版本 [v0.5.0](https://github.com/CMMUU/mihomo-codex/releases/tag/v0.5.0) 改进 Windows 权限提示、内核进程回收、系统代理恢复与连通性诊断；安装包和 SHA-256 校验文件以 Release 页面实际附件为准。
 - Windows 10/11 TUN 为实验性功能，已实现管理员会话运行方式，尚未完成真实 TUN 路由与恢复验收。各平台的安装、构建和网络接管验证范围见 [v0.5.0 发布说明](docs/发布说明-v0.5.0.md)。
-- 仓库及 Release 为私有，仅有仓库权限的账号可访问。本次没有为自研应用新增开源授权条款；第三方依赖沿用各自许可证。
+- 自 2026-09-04 起，应用源码按 [GNU GPL v3（GPL-3.0-only）](LICENSE) 开源。第三方依赖沿用各自许可证，见 [第三方声明](THIRD_PARTY_NOTICES.md)、[v0.5.0 许可证清单](docs/compliance/v0.5.0/license-inventory.md) 和 [SBOM](docs/compliance/v0.5.0/sbom.cdx.json)。`package.json` 中的 `private: true` 仅防止意外发布到 npm，不限制源码访问或 GPL 授予的权利。
 
 ## 设计文档
 
@@ -123,4 +123,4 @@ src-tauri/binaries/mihomo-<target-triple>
 
 构建脚本校验固定压缩资产的 SHA-256，并验证当前平台的 `mihomo -v` 输出。CI 在 macOS、Windows 和 Linux 原生 runner 执行。
 
-推送稳定版本标签 `vX.Y.Z` 后，`Release bundles` 在六个平台全部构建成功后自动创建 GitHub Release。标签必须与 `package.json`、Tauri 和 Cargo 版本一致，并提交对应的 `docs/发布说明-vX.Y.Z.md`。发布作业收齐 12 个安装包，附带匹配的 Mihomo GPL 许可证、上游源码和 `SHA256SUMS.txt`；附件上传及 SHA-256 校验全部通过后才公开草稿。重复运行会复用内容相同的附件，遇到同名不同内容则停止，不覆盖原发布包。手动 `workflow_dispatch` 只构建并保留 Actions artifacts，不创建发行版。
+推送稳定版本标签 `vX.Y.Z` 后，`Release bundles` 在六个平台全部构建成功后自动创建 GitHub Release。标签必须与 `package.json`、Tauri 和 Cargo 版本一致，并提交对应的 `docs/发布说明-vX.Y.Z.md`。发布作业从该标签的锁文件重新生成依赖 SBOM 与许可证清单，核对输入 SHA-256 和项目许可元数据；收齐 12 个安装包、Mihomo GPL 许可证及上游源码、项目 `mihomo-codex-LICENSE.txt`、`sbom.cdx.json`、`license-inventory.md`，加上 `SHA256SUMS.txt` 共 18 个附件，上传及 SHA-256 校验全部通过后才公开草稿。重复运行会复用内容相同的附件，遇到同名不同内容则停止，不覆盖原发布包。此规则适用于后续新发行版，v0.5.0 已发布的 15 个附件保持原样。手动 `workflow_dispatch` 只构建并保留 Actions artifacts，不创建发行版。
