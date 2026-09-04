@@ -122,3 +122,5 @@ src-tauri/binaries/mihomo-<target-triple>
 ```
 
 构建脚本校验固定压缩资产的 SHA-256，并验证当前平台的 `mihomo -v` 输出。CI 在 macOS、Windows 和 Linux 原生 runner 执行。
+
+推送稳定版本标签 `vX.Y.Z` 后，`Release bundles` 在六个平台全部构建成功后自动创建 GitHub Release。标签必须与 `package.json`、Tauri 和 Cargo 版本一致，并提交对应的 `docs/发布说明-vX.Y.Z.md`。发布作业收齐 12 个安装包，附带匹配的 Mihomo GPL 许可证、上游源码和 `SHA256SUMS.txt`；附件上传及 SHA-256 校验全部通过后才公开草稿。重复运行会复用内容相同的附件，遇到同名不同内容则停止，不覆盖原发布包。手动 `workflow_dispatch` 只构建并保留 Actions artifacts，不创建发行版。

@@ -1,0 +1,51 @@
+name: Sync GitHub to Gitee
+
+on:
+  push:
+    branches: ['**']
+    tags: ['**']
+  workflow_run:
+    workflows: [Release bundles]
+    types: [completed]
+  release:
+    types: [published, edited]
+  workflow_dispatch:
+  schedule:
+    - cron: '17 2 * * *'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: gitee-sync-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    if: >-
+      github.repository == 'CMMUU/mihomo-codex' &&
+      (github.event_name != 'workflow_run' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.head_repository.full_name == github.repository &&
+      (github.event.workflow_run.event == 'push' || github.event.workflow_run.event == 'workflow_dispatch')))
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - name: Check out trusted default-branch synchronizer
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          ref: main
+          persist-credentials: false
+      - name: Run offline synchronizer checks
+        run: python3 -m unittest discover -s scripts -p 'test_sync_gitee.py'
+      - name: Synchronize to the checked Gitee repository
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
+          GITEE_ASSET_HOSTS: ${{ vars.GITEE_ASSET_HOSTS }}
+          GITEE_MAX_ASSET_BYTES: ${{ vars.GITEE_MAX_ASSET_BYTES }}
+          GITEE_MAX_TOTAL_BYTES: ${{ vars.GITEE_MAX_TOTAL_BYTES }}
+          GITEE_OTHER_ATTACHMENT_BYTES: ${{ vars.GITEE_OTHER_ATTACHMENT_BYTES }}
+        run: >-
+          python3 scripts/sync_gitee.py --repo mihomo-codex
+          --scope all --work-dir "$RUNNER_TEMP/gitee-sync" --apply

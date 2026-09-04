@@ -6,6 +6,18 @@ on:
     branches: [main]
 
 jobs:
+  release-automation:
+    permissions:
+      contents: read
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Test publishing and Gitee synchronization
+        run: python3 -m unittest discover -s scripts -p 'test_*.py'
+
   test:
     strategy:
       fail-fast: false

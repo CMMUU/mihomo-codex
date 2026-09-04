@@ -6,6 +6,10 @@ on:
     tags:
       - "v*"
 
+concurrency:
+  group: release-bundles-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   bundle:
     permissions:
@@ -80,3 +84,33 @@ jobs:
           name: ${{ matrix.artifact }}
           path: ${{ matrix.paths }}
           if-no-files-found: error
+
+  publish:
+    needs: bundle
+    if: github.repository == 'CMMUU/mihomo-codex' && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Test release publisher
+        run: python3 -m unittest discover -s scripts -p 'test_publish_github_release.py'
+      - uses: actions/download-artifact@v4
+        with:
+          path: ${{ runner.temp }}/release-artifacts
+      - name: Publish complete GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_COMMIT: ${{ github.sha }}
+        run: >-
+          python3 scripts/publish_github_release.py
+          --tag "$RELEASE_TAG" --commit "$RELEASE_COMMIT"
+          --artifacts "$RUNNER_TEMP/release-artifacts"
+          --output "$RUNNER_TEMP/release-assets" --apply

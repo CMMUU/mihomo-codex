@@ -11,6 +11,8 @@ node_modules
 dist
 dist-ssr
 *.local
+__pycache__/
+*.py[cod]
 
 # Local credentials and signing material are never source artifacts
 .env
