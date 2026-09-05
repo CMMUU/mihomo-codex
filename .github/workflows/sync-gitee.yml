@@ -12,9 +12,14 @@ on:
   workflow_dispatch:
     inputs:
       release_tag:
-        description: Optional published stable tag to transfer; empty performs a full historical audit
+        description: Optional published stable tag; latest-version retention always takes precedence
         required: false
         type: string
+      dry_run:
+        description: Preview retained versions, retirement targets and quota without any remote changes
+        required: false
+        type: boolean
+        default: true
   schedule:
     - cron: '17 2 * * *'
 
@@ -42,7 +47,7 @@ jobs:
           ref: main
           persist-credentials: false
       - name: Run offline synchronizer checks
-        run: python3 -m unittest discover -s scripts -p 'test_sync_gitee.py'
+        run: python3 -m unittest discover -s scripts -p 'test_*gitee*.py'
       - name: Synchronize to the checked Gitee repository
         env:
           GITHUB_TOKEN: ${{ github.token }}
@@ -55,9 +60,15 @@ jobs:
           SYNC_RELEASE_TAG: ${{ github.event.release.tag_name }}
           SYNC_BUILD_REF: ${{ github.event.workflow_run.head_branch }}
           SYNC_REQUESTED_TAG: ${{ inputs.release_tag }}
+          SYNC_DRY_RUN: ${{ inputs.dry_run }}
         shell: bash
         run: |
-          args=(--repo routedeck --work-dir "$RUNNER_TEMP/gitee-sync" --apply)
+          # Explicitly approved retention: keep the newest stable release on
+          # Gitee; GitHub history, release metadata and all Git tags stay intact.
+          args=(--repo routedeck --work-dir "$RUNNER_TEMP/gitee-sync" --keep-latest-releases 1)
+          if [ "$SYNC_DRY_RUN" != "true" ]; then
+            args+=(--apply)
+          fi
           case "$SYNC_EVENT" in
             push)
               args+=(--scope refs)
@@ -81,7 +92,7 @@ jobs:
               fi
               ;;
             *)
-              # Scheduled and explicitly dispatched runs retain the full audit.
+              # Audit protected history too, but never refill expired binaries.
               args+=(--scope all)
               ;;
           esac

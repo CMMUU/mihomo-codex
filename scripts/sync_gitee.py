@@ -22,8 +22,10 @@ REPOS = {"routedeck"}
 GH_OWNER, GE_OWNER = "CMMUU", "cmmuu"
 GH_API, GE_API = "https://api.github.com", "https://gitee.com/api/v5"
 MAX_JSON, MAX_ASSET = 8 * 1024 * 1024, 512 * 1024 * 1024
-# Conservative decimal interpretation of the community plan's 100 MB / 1 GB.
-GE_MAX_ASSET, GE_MAX_TOTAL = 100_000_000, 1_000_000_000
+# Gitee documents 100 M per file. Allow 100 MiB; the service remains the final
+# authority. Keep the total budget conservative, including staging old/new files.
+GE_MAX_ASSET, GE_MAX_TOTAL = 100 * 1024 * 1024, 1_000_000_000
+STABLE_TAG = r"v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)"
 READ_ATTEMPTS = 3
 TRANSIENT_HTTP = {408, 429, 500, 502, 503, 504}
 GH_STORAGE = {"release-assets.githubusercontent.com", "objects.githubusercontent.com", "github-releases.githubusercontent.com"}
@@ -72,6 +74,26 @@ def source_digest(asset):
     if not isinstance(value, str) or not re.fullmatch(r"sha256:[0-9a-fA-F]{64}", value):
         raise SyncError("Unsupported GitHub asset digest")
     return value[7:].lower()
+
+
+def stable_releases(releases):
+    ordered, seen, ids = [], set(), set()
+    for release in releases:
+        tag = release.get("tag_name", "")
+        match = re.fullmatch(STABLE_TAG, tag) if isinstance(tag, str) else None
+        if release.get("draft") is not False or release.get("prerelease") is not False or not match:
+            continue
+        release_id = release.get("id")
+        if tag in seen or type(release_id) is not int or release_id <= 0 or release_id in ids:
+            raise SyncError("Ambiguous published stable releases; retention stopped")
+        seen.add(tag)
+        ids.add(release_id)
+        ordered.append((tuple(map(int, match.groups())), release))
+    return [release for _, release in sorted(ordered, key=lambda item: item[0], reverse=True)]
+
+
+def asset_identity(asset):
+    return tuple(asset.get(key) for key in ("id", "name", "size", "digest", "state", "updated_at"))
 
 
 def release_metadata_matches(actual, expected, keys):
@@ -141,6 +163,9 @@ class Api:
     def _request_once(self, path, method="GET", data=None):
         if self.service == "github" and method != "GET":
             raise SyncError("GitHub writes are not supported")
+        if method == "DELETE" and not re.fullmatch(
+                rf"/repos/{GE_OWNER}/(?:{'|'.join(sorted(REPOS))})/releases/[1-9]\d*/attach_files/[1-9]\d*", path):
+            raise SyncError("Deletion is restricted to individual mirrored Gitee release attachments")
         if not path.startswith("/") or "access_token=" in path or "token=" in path:
             raise SyncError("Invalid API path")
         headers, body = self.headers(), None
@@ -156,6 +181,8 @@ class Api:
                 raw = response.read(MAX_JSON + 1)
                 if len(raw) > MAX_JSON:
                     raise SyncError("API response exceeds the metadata limit")
+                if method == "DELETE" and response.status == 204 and not raw:
+                    return None
                 return json.loads(raw)
         except HTTPError as error:
             # Never print response bodies, full URLs or signed query strings.
@@ -417,27 +444,211 @@ class Sync:
             raise SyncError("Gitee branches or tags did not match the source after push")
         return bare
 
-    def source_assets(self, release):
+    def source_assets(self, release, enforce_quota=True):
         release_id = release.get("id")
-        if type(release_id) is not int:
+        if type(release_id) is not int or release_id <= 0:
             raise SyncError("Source release ID is missing or invalid")
         if release_id in self.release_assets:
-            return self.release_assets[release_id]
+            assets = self.release_assets[release_id]
+            if enforce_quota and any(asset["size"] > self.max_asset_bytes for asset in assets):
+                raise SyncError(f"GitHub attachment exceeds the configured Gitee per-file limit ({self.max_asset_bytes} bytes)")
+            return assets
         assets = self.gh.pages(f"{self.source_path}/releases/{release_id}/assets")
-        names = set()
+        names, ids = set(), set()
         for asset in assets:
             name = safe_name(asset.get("name"))
-            if name.casefold() in names or asset.get("state") != "uploaded" or type(asset.get("id")) is not int:
+            asset_id = asset.get("id")
+            if (name.casefold() in names or asset.get("state") != "uploaded"
+                    or type(asset_id) is not int or asset_id <= 0 or asset_id in ids):
                 raise SyncError("Incomplete or ambiguous GitHub attachment")
             names.add(name.casefold())
+            ids.add(asset_id)
             size = asset.get("size")
-            if type(size) is not int or not 0 <= size <= min(self.max_asset_bytes, MAX_ASSET):
+            if type(size) is not int or not 0 <= size <= min(self.max_asset_bytes if enforce_quota else MAX_ASSET, MAX_ASSET):
                 raise SyncError(f"GitHub attachment exceeds the configured Gitee per-file limit ({self.max_asset_bytes} bytes)")
             if asset.get("url") != GH_API + f"{self.source_path}/releases/assets/{asset['id']}":
                 raise SyncError("GitHub attachment belongs to a different repository")
             source_digest(asset)
         self.release_assets[release_id] = assets
         return assets
+
+    def release_files(self, release, enforce_quota=True):
+        assets = self.source_assets(release) if enforce_quota else self.source_assets(release, False)
+        files = []
+        directory = self.work / "assets" / self.repo / str(release["id"])
+        for asset in assets:
+            file = directory / asset["name"]
+            actual = self.gh.download(f"{self.source_path}/releases/assets/{asset['id']}",
+                                      file, asset["size"], source_digest(asset))
+            files.append({"name": asset["name"], "path": file, "size": asset["size"], "sha256": actual})
+        verify_manifest(files)
+        return files
+
+    def retention_plan(self, releases, keep):
+        ordered = stable_releases(releases)
+        retained = ordered[:keep]
+        if not retained:
+            raise SyncError("No published stable release is available; no retention cleanup allowed")
+        sources = {release["tag_name"]: release for release in ordered}
+        retained_tags = {release["tag_name"] for release in retained}
+        existing, total, candidates = {}, self.other_attachment_bytes, []
+        for target in self.ge.pages(self.target_path + "/releases"):
+            tag, release_id = target.get("tag_name"), target.get("id")
+            if not isinstance(tag, str) or not tag or tag in existing or type(release_id) is not int or release_id <= 0:
+                raise SyncError("Ambiguous destination release metadata")
+            attachments, ids = {}, set()
+            for asset in self.ge.pages(f"{self.target_path}/releases/{release_id}/attach_files"):
+                name, size, asset_id = safe_name(asset.get("name")), asset.get("size"), asset.get("id")
+                if (name.casefold() in attachments or type(size) is not int or size < 0
+                        or type(asset_id) is not int or asset_id <= 0 or asset_id in ids):
+                    raise SyncError("Ambiguous destination attachment metadata; retention stopped")
+                attachments[name.casefold()] = asset
+                ids.add(asset_id)
+                total += size
+            existing[tag] = attachments
+            # Unknown releases, preview releases and target-only files are not
+            # mirrored history and never become deletion candidates.
+            if tag in retained_tags or tag not in sources or target.get("prerelease") is not False or not attachments:
+                continue
+            source = sources[tag]
+            source_assets = {asset["name"].casefold(): asset for asset in self.source_assets(source, False)}
+            removable = []
+            for key, asset in attachments.items():
+                original = source_assets.get(key)
+                if original is None:
+                    continue
+                if (asset["name"], asset["size"]) != (original["name"], original["size"]):
+                    raise SyncError("Historical Gitee attachment conflicts with its GitHub backup; no cleanup allowed")
+                removable.append({"target": asset, "source": original})
+            if removable:
+                candidates.append({"source": source, "target": target, "assets": removable,
+                                   "bytes": sum(item["target"]["size"] for item in removable)})
+        added = 0
+        for release in retained:
+            assets = self.source_assets(release)
+            if not assets:
+                raise SyncError("Newest stable release has no assets; no cleanup allowed")
+            for asset in assets:
+                present = existing.get(release["tag_name"], {}).get(asset["name"].casefold())
+                if present is None:
+                    added += asset["size"]
+                elif (present["name"], present["size"]) != (asset["name"], asset["size"]):
+                    raise SyncError("Existing Gitee attachment conflicts with the source; no files were replaced")
+        candidates.sort(key=lambda group: tuple(map(int, group["source"]["tag_name"][1:].split("."))))
+        freed = sum(group["bytes"] for group in candidates)
+        final_bytes = total + added - freed
+        if final_bytes > self.max_total_bytes:
+            raise SyncError(f"Retained releases and protected files need {final_bytes} bytes, above {self.max_total_bytes}; no cleanup allowed")
+        before, after, staged = [], [], total + added
+        for group in candidates:
+            if staged > self.max_total_bytes:
+                before.append(group)
+                staged -= group["bytes"]
+            else:
+                after.append(group)
+        print(f"Retention: keep {', '.join(release['tag_name'] for release in retained)}; "
+              f"{total} existing/reserved + {added} new - {freed} retired = {final_bytes} bytes", flush=True)
+        for group in candidates:
+            phase = "before transfer (space needed)" if group in before else "after verified transfer"
+            print(f"Retire Gitee attachments only: {group['source']['tag_name']}, release ID {group['target']['id']}, "
+                  f"{len(group['assets'])} file(s), {group['bytes']} bytes, {phase}", flush=True)
+        return {"retained": retained, "before": before, "after": after, "keep": keep}
+
+    def check_retention_source(self, plan, release):
+        # Stop on concurrent publishing, withdrawn releases or replaced source
+        # assets. Recompute selection from GitHub, never from a stale event tag.
+        current = stable_releases(self.gh.pages(self.source_path + "/releases"))
+        identity = lambda rows: [(row["id"], row["tag_name"]) for row in rows]
+        if identity(current[:plan["keep"]]) != identity(plan["retained"]):
+            raise SyncError("Published stable releases changed during retention; cleanup stopped")
+        if (release["id"], release["tag_name"]) not in identity(current):
+            raise SyncError("GitHub backup release was withdrawn; cleanup stopped")
+        expected = self.release_assets.pop(release["id"])
+        actual = self.source_assets(release, False)
+        if sorted(map(asset_identity, expected)) != sorted(map(asset_identity, actual)):
+            raise SyncError("GitHub backup assets changed during retention; cleanup stopped")
+
+    def verify_retirement(self, group):
+        files = {item["name"]: item for item in self.release_files(group["source"], False)}
+        for item in group["assets"]:
+            asset = item["target"]
+            original = files[asset["name"]]
+            check = self.work / "verify" / str(group["target"]["id"]) / (str(asset["id"]) + ".retire-" + uuid.uuid4().hex)
+            try:
+                self.ge.download(f"{self.target_path}/releases/{group['target']['id']}/attach_files/{asset['id']}/download",
+                                 check, original["size"], original["sha256"])
+            finally:
+                if check.exists():
+                    check.unlink()
+            item["sha256"] = original["sha256"]
+        print(f"Verified GitHub backup and Gitee bytes: {group['source']['tag_name']}", flush=True)
+
+    def retire_attachments(self, plan, group):
+        self.check_retention_source(plan, group["source"])
+        if group["source"]["tag_name"] in {row["tag_name"] for row in plan["retained"]}:
+            raise SyncError("Refusing to delete a retained release attachment")
+        endpoint = f"{self.target_path}/releases/{group['target']['id']}"
+        target = self.ge.request(endpoint)
+        if (target.get("id"), target.get("tag_name"), target.get("prerelease")) != (
+                group["target"]["id"], group["source"]["tag_name"], False):
+            raise SyncError("Destination release changed before cleanup")
+        for item in sorted(group["assets"], key=lambda row: (row["target"]["name"] not in {"latest.json", "latest-gitee.json"}, row["target"]["name"])):
+            asset = item["target"]
+            if not re.fullmatch(r"[0-9a-f]{64}", item.get("sha256", "")):
+                raise SyncError("No verified byte-identical GitHub backup; refusing deletion")
+            # Older assets without GitHub digests need fresh source bytes again
+            # immediately before removal; never trust a cached file alone.
+            if source_digest(item["source"]) is None:
+                check = self.work / "verify" / ("source-retire-" + uuid.uuid4().hex)
+                try:
+                    self.gh.download(f"{self.source_path}/releases/assets/{item['source']['id']}",
+                                     check, asset["size"], item["sha256"])
+                finally:
+                    if check.exists():
+                        check.unlink()
+            self.guard()
+            rows = self.ge.pages(endpoint + "/attach_files")
+            matches = [row for row in rows if row.get("id") == asset["id"] or str(row.get("name", "")).casefold() == asset["name"].casefold()]
+            if not matches:
+                continue  # Already removed; do not invent a new deletion target.
+            if len(matches) != 1 or any(matches[0].get(key) != asset[key] for key in ("id", "name", "size")):
+                raise SyncError("Destination attachment changed before cleanup")
+            error = None
+            try:
+                self.ge.request(f"{endpoint}/attach_files/{asset['id']}", "DELETE")
+            except SyncError as failure:
+                error = failure
+            # An empty/lost response is not permission to repeat DELETE. Read
+            # back first, and stop if absence cannot be independently confirmed.
+            remaining = self.ge.pages(endpoint + "/attach_files")
+            if any(row.get("id") == asset["id"] or row.get("name") == asset["name"] for row in remaining):
+                raise error or SyncError("Gitee did not confirm attachment deletion; no delete was retried")
+            print(f"Removed Gitee {group['source']['tag_name']}/{asset['name']} ({asset['size']} bytes); GitHub original retained", flush=True)
+
+    def run_retention(self, releases, keep, apply, bare):
+        plan = self.retention_plan(releases, keep)
+        if not apply:
+            print("Retention preflight only: byte verification and writes require --apply. No remote changes.", flush=True)
+            return
+        # Verify all incoming files and all recoverable outgoing bytes BEFORE
+        # the first deletion. Only free the oldest history needed for staging;
+        # retire the rest after every retained installer/manifest verifies.
+        for release in plan["retained"]:
+            self.release_files(release)
+            self.check_retention_source(plan, release)
+        for group in plan["before"] + plan["after"]:
+            self.verify_retirement(group)
+        for release in plan["retained"]:
+            self.check_retention_source(plan, release)
+        for group in plan["before"]:
+            self.retire_attachments(plan, group)
+        self.plan_release_capacity(plan["retained"])
+        for release in reversed(plan["retained"]):
+            self.check_retention_source(plan, release)
+            self.sync_release(release, bare)
+        for group in plan["after"]:
+            self.retire_attachments(plan, group)
+        self.plan_release_capacity(plan["retained"])
 
     def plan_release_capacity(self, releases):
         # Include every existing Gitee release, including target-only releases.
@@ -509,16 +720,7 @@ class Sync:
         commit = git_run(self.repo, "--git-dir", str(bare), "rev-parse", "--verify", f"refs/tags/{tag}^{{commit}}")
         if not re.fullmatch(r"[0-9a-f]{40,64}", commit):
             raise SyncError("Release tag does not resolve to a source commit")
-        assets = self.source_assets(release)
-        files = []
-        directory = self.work / "assets" / self.repo / str(release["id"])
-        for asset in assets:
-            name = asset["name"]
-            api_path = f"{self.source_path}/releases/assets/{asset['id']}"
-            file = directory / name
-            actual = self.gh.download(api_path, file, asset["size"], source_digest(asset))
-            files.append({"name": name, "path": file, "size": asset["size"], "sha256": actual})
-        verify_manifest(files)
+        files = self.release_files(release)
         matches = [row for row in self.ge.pages(self.target_path + "/releases") if row.get("tag_name") == tag]
         if len(matches) > 1:
             raise SyncError("Duplicate destination releases for one tag")
@@ -543,7 +745,9 @@ class Sync:
             raise SyncError("Gitee release metadata did not match after synchronization")
         print(f"Synchronized {self.repo}: {tag}, {len(files)} attachment(s)", flush=True)
 
-    def run(self, scope, apply, release_tag=None):
+    def run(self, scope, apply, release_tag=None, keep_latest_releases=None):
+        if keep_latest_releases is not None and (type(keep_latest_releases) is not int or not 1 <= keep_latest_releases <= 10):
+            raise SyncError("Release retention must keep between 1 and 10 stable versions")
         if release_tag is not None and (scope != "all" or not re.fullmatch(r"v(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)", release_tag)):
             raise SyncError("A focused release sync requires --scope all and an exact stable release tag")
         self.guard()
@@ -558,6 +762,11 @@ class Sync:
         bare = self.sync_refs() if apply else None
         if apply:
             print(f"Synchronized and verified {self.repo} branches and tags", flush=True)
+        if scope == "all" and keep_latest_releases is not None:
+            # Retention supersedes an older focused event, so edits to expired
+            # releases and scheduled audits cannot resurrect evicted binaries.
+            self.run_retention(releases, keep_latest_releases, apply, bare)
+            return
         if scope == "all":
             # Focus only limits transfers. Capacity/conflict checks still cover
             # every source and destination release, including historical assets.
@@ -574,6 +783,8 @@ def main():
     parser.add_argument("--repo", choices=sorted(REPOS), required=True)
     parser.add_argument("--scope", choices=("refs", "all"), default="all")
     parser.add_argument("--release-tag", help="Transfer one published stable release; still check total attachment capacity")
+    parser.add_argument("--keep-latest-releases", type=int, choices=range(1, 11),
+                        help="Opt in to retiring byte-verified Gitee history outside the latest N stable versions; never delete tags or GitHub assets")
     parser.add_argument("--work-dir", type=Path, required=True)
     parser.add_argument("--apply", action="store_true", help="Explicitly authorize writes to the checked Gitee repository")
     args = parser.parse_args()
@@ -587,7 +798,7 @@ def main():
     max_total = configured_bytes("GITEE_MAX_TOTAL_BYTES", GE_MAX_TOTAL, 100_000_000_000)
     reserved = configured_bytes("GITEE_OTHER_ATTACHMENT_BYTES", 0, max_total)
     Sync(args.repo, Api("github", gh_token), Api("gitee", ge_token, extra_hosts), args.work_dir,
-         max_asset, max_total, reserved).run(args.scope, args.apply, args.release_tag)
+         max_asset, max_total, reserved).run(args.scope, args.apply, args.release_tag, args.keep_latest_releases)
 
 
 if __name__ == "__main__":
