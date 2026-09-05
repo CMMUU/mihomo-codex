@@ -48,6 +48,8 @@
   --panel-shadow: 0 12px 32px rgba(0, 0, 0, 0.18);
   --modal-shadow: 0 24px 64px rgba(0, 0, 0, 0.48);
   --accent-shadow: 0 7px 20px rgba(0, 0, 0, 0.18);
+  --scrollbar-thumb: rgba(167, 174, 188, 0.5);
+  --scrollbar-thumb-hover: rgba(167, 174, 188, 0.72);
 }
 
 :root[data-theme="light"] {
@@ -89,6 +91,8 @@
   --panel-shadow: 0 4px 20px rgba(31, 41, 55, 0.045);
   --modal-shadow: 0 24px 64px rgba(31, 41, 55, 0.18);
   --accent-shadow: 0 5px 15px rgba(37, 99, 235, 0.14);
+  --scrollbar-thumb: rgba(96, 105, 121, 0.46);
+  --scrollbar-thumb-hover: rgba(71, 81, 99, 0.66);
 }
 
 /* Retains the original deep-purple Figma visual as an explicit theme. */
@@ -137,6 +141,8 @@
   --panel-shadow: 0 22px 56px rgba(10, 3, 20, 0.28);
   --modal-shadow: 0 28px 64px rgba(4, 1, 12, 0.6), inset 0 1px 0 rgba(255, 255, 255, 0.07);
   --accent-shadow: 0 10px 28px rgba(56, 20, 107, 0.32);
+  --scrollbar-thumb: rgba(184, 169, 201, 0.5);
+  --scrollbar-thumb-hover: rgba(193, 154, 255, 0.7);
 }
 
 * { box-sizing: border-box; }
@@ -381,6 +387,11 @@ h3 { margin: 0; font-size: 13px; }
   color: var(--warning);
   border-color: rgba(var(--warning-rgb), 0.38);
   background: rgba(var(--warning-rgb), 0.1);
+}
+.control-state-pill.is-error {
+  color: var(--danger);
+  border-color: rgba(var(--danger-rgb), 0.38);
+  background: rgba(var(--danger-rgb), 0.09);
 }
 .control-grid {
   display: grid;
@@ -1032,6 +1043,91 @@ td small { color: var(--muted); }
 .checkbox-row.is-hidden { display: none !important; }
 .checkbox-row input { width: 16px; height: 16px; }
 .settings-note { margin-top: 20px; padding: 12px; border: 1px solid var(--line); border-radius: 9px; color: var(--muted); background: var(--panel-soft); font-size: 11px; line-height: 1.7; }
+.app-update-panel {
+  overflow: hidden;
+  background: var(--feature-background);
+}
+.app-update-summary {
+  display: grid;
+  grid-template-columns: 46px minmax(0, 1fr);
+  gap: 13px;
+  align-items: center;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--input);
+}
+.app-update-mark {
+  display: grid;
+  width: 46px;
+  height: 46px;
+  place-items: center;
+  border: 1px solid rgba(var(--accent-rgb), 0.42);
+  border-radius: 13px;
+  color: var(--accent);
+  background: var(--accent-soft);
+  font-size: 21px;
+  font-weight: 800;
+}
+.app-update-summary strong { color: var(--text); font-size: 13px; }
+.app-update-summary p {
+  margin: 5px 0 0;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+}
+.app-update-details { margin: 13px 0 0; }
+.app-update-controls {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-top: 16px;
+  padding-top: 15px;
+  border-top: 1px solid var(--line);
+}
+.app-update-controls .toolbar { flex-wrap: wrap; justify-content: flex-end; }
+.app-update-auto-check { min-width: 0; color: var(--text); }
+.app-update-auto-check > span { display: grid; gap: 3px; }
+.app-update-auto-check strong { font-size: 11px; font-weight: 600; }
+.app-update-auto-check small { color: var(--muted); font-size: 9px; line-height: 1.45; }
+.app-update-notes {
+  margin-top: 14px;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel-soft);
+}
+.app-update-notes summary { color: var(--text); font-size: 11px; cursor: pointer; }
+.app-update-notes p {
+  max-height: 220px;
+  margin: 10px 0 0;
+  overflow: auto;
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.7;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.app-update-panel > .hint { margin-top: 13px; }
+.app-update-preferences { display: grid; grid-template-columns: minmax(220px, 1fr) minmax(220px, 1fr); gap: 16px; align-items: center; margin-top: 18px; padding: 18px 0; border-block: 1px solid var(--line); }
+.app-update-preferences > label:first-child { display: grid; gap: 8px; font-size: 12px; color: var(--muted); }
+.app-update-preferences > button { justify-self: end; }
+.app-update-channels { display: grid; gap: 6px; padding: 12px 16px; margin: 14px 0 0; list-style: none; background: var(--panel-soft); border-radius: 12px; font-size: 11px; color: var(--muted); overflow-wrap: anywhere; }
+.app-update-channels .is-warning { color: var(--warning); }
+.app-update-progress { display: grid; gap: 8px; margin-top: 16px; font-size: 11px; color: var(--muted); }
+.app-update-progress progress { appearance: none; width: 100%; height: 8px; border: 0; border-radius: 999px; overflow: hidden; accent-color: var(--accent); }
+.app-update-progress progress::-webkit-progress-bar { background: var(--line); border-radius: 999px; }
+.app-update-progress progress::-webkit-progress-value { background: var(--accent); border-radius: 999px; }
+@media (max-width: 980px) {
+  .app-update-preferences { grid-template-columns: 1fr; }
+  .app-update-preferences > button { justify-self: start; }
+}
+@media (max-width: 960px) {
+  .app-update-controls { align-items: flex-start; flex-direction: column; }
+  .app-update-controls .toolbar { width: 100%; justify-content: flex-start; }
+}
 .tun-helper-panel {
   overflow: hidden;
   background:
@@ -1199,9 +1295,11 @@ td small { color: var(--muted); }
   appearance: none;
   min-height: 40px;
   padding: 0 12px;
+  overflow: hidden;
   border: 1px solid transparent;
-  border-radius: 8px;
+  border-radius: 10px;
   color: var(--muted);
+  background-clip: padding-box;
   font-size: 12px;
   outline: none;
 }
@@ -1537,6 +1635,7 @@ td small { color: var(--muted); }
 :root[data-view="profiles"] .sidebar .nav-item[data-view="profiles"],
 :root[data-view="subscriptions"] .sidebar .nav-item[data-view="subscriptions"],
 :root[data-view="proxies"] .sidebar .nav-item[data-view="proxies"],
+:root[data-view="programs"] .sidebar .nav-item[data-view="programs"],
 :root[data-view="rules"] .sidebar .nav-item[data-view="rules"],
 :root[data-view="connections"] .sidebar .nav-item[data-view="connections"],
 :root[data-view="logs"] .sidebar .nav-item[data-view="logs"],
@@ -1550,6 +1649,7 @@ td small { color: var(--muted); }
 :root[data-view="profiles"] .sidebar .nav-item[data-view="profiles"] span,
 :root[data-view="subscriptions"] .sidebar .nav-item[data-view="subscriptions"] span,
 :root[data-view="proxies"] .sidebar .nav-item[data-view="proxies"] span,
+:root[data-view="programs"] .sidebar .nav-item[data-view="programs"] span,
 :root[data-view="rules"] .sidebar .nav-item[data-view="rules"] span,
 :root[data-view="connections"] .sidebar .nav-item[data-view="connections"] span,
 :root[data-view="logs"] .sidebar .nav-item[data-view="logs"] span,
@@ -1567,6 +1667,7 @@ body:has(#overview-view:not(.is-hidden)) .nav-item[data-view="overview"],
 body:has(#profiles-view:not(.is-hidden)) .nav-item[data-view="profiles"],
 body:has(#subscriptions-view:not(.is-hidden)) .nav-item[data-view="subscriptions"],
 body:has(#proxies-view:not(.is-hidden)) .nav-item[data-view="proxies"],
+body:has(#programs-view:not(.is-hidden)) .nav-item[data-view="programs"],
 body:has(#rules-view:not(.is-hidden)) .nav-item[data-view="rules"],
 body:has(#connections-view:not(.is-hidden)) .nav-item[data-view="connections"],
 body:has(#logs-view:not(.is-hidden)) .nav-item[data-view="logs"],
@@ -1580,12 +1681,17 @@ body:has(#overview-view:not(.is-hidden)) .nav-item[data-view="overview"] span,
 body:has(#profiles-view:not(.is-hidden)) .nav-item[data-view="profiles"] span,
 body:has(#subscriptions-view:not(.is-hidden)) .nav-item[data-view="subscriptions"] span,
 body:has(#proxies-view:not(.is-hidden)) .nav-item[data-view="proxies"] span,
+body:has(#programs-view:not(.is-hidden)) .nav-item[data-view="programs"] span,
 body:has(#rules-view:not(.is-hidden)) .nav-item[data-view="rules"] span,
 body:has(#connections-view:not(.is-hidden)) .nav-item[data-view="connections"] span,
 body:has(#logs-view:not(.is-hidden)) .nav-item[data-view="logs"] span,
 body:has(#diagnostics-view:not(.is-hidden)) .nav-item[data-view="diagnostics"] span,
 body:has(#settings-view:not(.is-hidden)) .nav-item[data-view="settings"] span {
   color: var(--accent) !important;
+}
+body:has(.view-stack:not(.is-hidden)) .sidebar .nav-item:hover:not([aria-current="page"]) {
+  color: var(--text) !important;
+  background: var(--hover) !important;
 }
 
 /* Figma source: Subscriptions top-add screen 30:190 and Node Details modal 24:174 */
@@ -1938,8 +2044,75 @@ body:has(#settings-view:not(.is-hidden)) .nav-item[data-view="settings"] span {
 .log-list,
 .node-details-modal {
   overscroll-behavior: contain;
+}
+.log-list,
+.node-details-modal {
   background: var(--modal-background);
   box-shadow: var(--modal-shadow);
+}
+.nav-list {
+  min-height: 0;
+  margin: -6px;
+  padding: 6px;
+  overflow-x: hidden;
+  overflow-y: auto;
+  background: transparent;
+  box-shadow: none;
+}
+
+/* Keep every scroll surface visually inside the same rounded design language. */
+.page-scroll::-webkit-scrollbar,
+.nav-list::-webkit-scrollbar,
+.log-list::-webkit-scrollbar,
+.node-details-modal::-webkit-scrollbar {
+  width: 12px;
+  height: 12px;
+}
+.page-scroll::-webkit-scrollbar-track,
+.nav-list::-webkit-scrollbar-track,
+.log-list::-webkit-scrollbar-track,
+.node-details-modal::-webkit-scrollbar-track {
+  margin-block: 10px;
+  border-radius: 999px;
+  background: transparent;
+}
+.page-scroll::-webkit-scrollbar-thumb,
+.nav-list::-webkit-scrollbar-thumb,
+.log-list::-webkit-scrollbar-thumb,
+.node-details-modal::-webkit-scrollbar-thumb {
+  min-height: 48px;
+  border: 3px solid transparent;
+  border-radius: 999px;
+  background: var(--scrollbar-thumb);
+  background-clip: content-box;
+}
+.page-scroll::-webkit-scrollbar-thumb:hover,
+.nav-list::-webkit-scrollbar-thumb:hover,
+.log-list::-webkit-scrollbar-thumb:hover,
+.node-details-modal::-webkit-scrollbar-thumb:hover {
+  background-color: var(--scrollbar-thumb-hover);
+}
+.page-scroll::-webkit-scrollbar-button,
+.nav-list::-webkit-scrollbar-button,
+.log-list::-webkit-scrollbar-button,
+.node-details-modal::-webkit-scrollbar-button,
+.page-scroll::-webkit-scrollbar-corner,
+.nav-list::-webkit-scrollbar-corner,
+.log-list::-webkit-scrollbar-corner,
+.node-details-modal::-webkit-scrollbar-corner {
+  display: none;
+  width: 0;
+  height: 0;
+  background: transparent;
+}
+@supports not selector(::-webkit-scrollbar) {
+  .page-scroll,
+  .nav-list,
+  .log-list,
+  .node-details-modal {
+    scrollbar-color: var(--scrollbar-thumb) transparent;
+    scrollbar-width: thin;
+  }
 }
 
 /* Approved compact global traffic monitor: status left, upload above download. */
@@ -2004,4 +2177,59 @@ body:has(#settings-view:not(.is-hidden)) .nav-item[data-view="settings"] span {
   font-size: 11px;
   font-weight: 500;
   text-align: right;
+}
+
+/* Program launcher: use the same theme, corner and focus tokens as settings. */
+.program-intro .panel-heading { margin-bottom: 12px; }
+.program-lead { margin: 0 0 8px; font-size: 15px; font-weight: 600; }
+.program-intro > .hint { margin: 0; max-width: 920px; line-height: 1.7; }
+.program-connection { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-top: 18px; font-size: 12px; }
+.program-connection code { padding: 5px 9px; border: 1px solid var(--line); border-radius: 8px; background: var(--input); color: var(--muted); overflow-wrap: anywhere; }
+.program-core-dot { width: 7px; height: 7px; flex: 0 0 7px; border-radius: 50%; background: var(--muted); }
+.program-core-dot.is-running { background: var(--success); }
+.program-layout { display: grid; grid-template-columns: minmax(300px, 0.9fr) minmax(350px, 1.25fr); align-items: start; gap: 18px; min-width: 0; }
+.program-layout > .panel { min-width: 0; }
+.program-editor .panel-heading, .program-library .panel-heading { margin-bottom: 16px; }
+#program-fields { display: grid; gap: 9px; min-width: 0; margin: 0; padding: 0; border: 0; }
+#program-fields label { margin-top: 7px; color: var(--muted); font-size: 12px; }
+#program-fields input, #program-fields select, #program-fields textarea { width: 100%; min-width: 0; }
+#program-fields .hint { margin: 0 0 4px; font-size: 11px; line-height: 1.65; }
+.program-path-picker { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.program-path-picker .button { flex-shrink: 0; padding-inline: 12px; }
+.program-advanced { margin-top: 6px; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); padding: 12px 0; }
+.program-advanced summary { cursor: pointer; font-size: 12px; color: var(--text); }
+.program-advanced[open] > label { display: block; margin: 14px 0 8px !important; }
+.program-advanced textarea { resize: vertical; min-height: 90px; }
+.program-advanced .hint { margin-top: 6px !important; }
+.program-form-actions { margin-top: 8px; flex-wrap: wrap; }
+.program-editor > .hint { margin: 14px 0 0; font-size: 11px; }
+.program-library .panel-heading { flex-wrap: wrap; gap: 12px; }
+.program-count { display: inline-flex; justify-content: center; align-items: center; margin-left: 4px; min-width: 25px; height: 25px; padding: 0 7px; border-radius: 8px; background: var(--accent-soft); color: var(--accent); font-size: 12px; vertical-align: middle; }
+.program-feedback { margin: 0 0 16px; padding: 11px 13px; border: 1px solid var(--line); border-radius: 10px; color: var(--muted); background: var(--input); font-size: 12px; line-height: 1.7; overflow-wrap: anywhere; }
+.program-feedback[data-error="true"] { color: var(--danger); border-color: rgba(var(--danger-rgb), 0.35); }
+.program-list { display: grid; gap: 12px; }
+.program-empty { display: grid; justify-items: center; align-content: center; min-height: 228px; padding: 28px 15px; text-align: center; border: 1px dashed var(--line-strong); border-radius: 12px; background: var(--panel-soft); }
+.program-empty > span { display: grid; place-items: center; width: 42px; height: 42px; margin-bottom: 15px; border-radius: 12px; font-size: 25px; color: var(--accent); background: var(--accent-soft); }
+.program-empty > strong { font-size: 14px; }
+.program-empty > p { color: var(--muted); font-size: 12px; line-height: 1.6; }
+.program-card { padding: 16px; border: 1px solid var(--line); border-radius: 12px; background: var(--panel-soft); min-width: 0; }
+.program-card-heading { display: flex; align-items: center; gap: 11px; }
+.program-card-heading > div { min-width: 0; }
+.program-card-heading h3 { margin: 0 0 5px; font-size: 14px; line-height: 1.5; overflow-wrap: anywhere; }
+.program-icon { display: grid; place-items: center; width: 36px; height: 36px; flex: 0 0 36px; border-radius: 10px; color: var(--accent); background: var(--accent-soft); font-size: 16px; font-weight: 600; }
+.program-mode-badge, .program-run-status { color: var(--muted); font-size: 11px; }
+.program-run-status { margin: 10px 0 14px; }
+.program-run-status[data-missing="true"] { color: var(--danger); }
+.program-exe { margin: 12px 0 0; color: var(--muted); font-family: ui-monospace, Consolas, monospace; font-size: 11px; line-height: 1.7; overflow-wrap: anywhere; }
+.program-card-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.program-card-actions .button { min-height: 34px; padding: 7px 12px; font-size: 12px; }
+.program-library-note { margin: 17px 0 0; font-size: 11px; line-height: 1.7; }
+.proxy-compatibility-panel > .hint { margin: 0 0 14px; line-height: 1.7; }
+.proxy-compatibility-results { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; margin: 0; }
+.proxy-compatibility-results > div { min-width: 0; padding: 12px; border: 1px solid var(--line); border-radius: 10px; }
+.proxy-compatibility-results dt { color: var(--muted); font-size: 11px; margin-bottom: 7px; }
+.proxy-compatibility-results dd { margin: 0; font-family: ui-monospace, Consolas, monospace; font-size: 12px; overflow-wrap: anywhere; }
+@media (max-width: 1130px) {
+  .program-layout { grid-template-columns: minmax(0, 1fr); }
+  .proxy-compatibility-results { grid-template-columns: minmax(0, 1fr); }
 }

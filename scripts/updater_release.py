@@ -1,0 +1,93 @@
+"""Stage signed, byte-identical updater packages and channel-specific manifests."""
+import datetime
+import hashlib
+import json
+import os
+from pathlib import Path
+import re
+import shutil
+import subprocess
+
+
+def updater_names(version):
+    prefix = f"RouteDeck_{version}"
+    return {
+        "macos-aarch64": ("darwin-aarch64", "RouteDeck.app.tar.gz", f"{prefix}_aarch64.app.tar.gz"),
+        "macos-x64": ("darwin-x86_64", "RouteDeck.app.tar.gz", f"{prefix}_x64.app.tar.gz"),
+        "windows-x64": ("windows-x86_64", f"{prefix}_x64-setup.exe", f"{prefix}_x64-setup.exe"),
+        "windows-arm64": ("windows-aarch64", f"{prefix}_arm64-setup.exe", f"{prefix}_arm64-setup.exe"),
+        "linux-x64": ("linux-x86_64", f"{prefix}_amd64.AppImage", f"{prefix}_amd64.AppImage"),
+        "linux-arm64": ("linux-aarch64", f"{prefix}_aarch64.AppImage", f"{prefix}_aarch64.AppImage"),
+    }
+
+
+def one_file(folder, name):
+    matches = list(folder.rglob(name))
+    if len(matches) != 1 or matches[0].is_symlink() or not matches[0].is_file() or not matches[0].stat().st_size:
+        raise ValueError(f"Missing, duplicated or invalid updater asset: {folder.name}/{name}")
+    if matches[0].stat().st_size > 256 * 1024 * 1024:
+        raise ValueError(f"Updater asset exceeds 256 MiB: {name}")
+    return matches[0]
+
+
+def verify_signature(root, asset, signature):
+    result = subprocess.run([os.environ.get("NODE_BINARY", "node"), str(root / "scripts/verify-update-signature.mjs"),
+                             str(root / "src-tauri/tauri.conf.json"), str(asset), str(signature)],
+                            capture_output=True, check=False)
+    if result.returncode:
+        raise ValueError(f"Updater signature does not verify with the application public key: {asset.name}")
+
+
+def stage_updaters(root, artifacts, output, version, notes, verify=verify_signature, published_at=None):
+    config = json.loads((root / "src-tauri/tauri.conf.json").read_text(encoding="utf-8"))
+    if config.get("bundle", {}).get("createUpdaterArtifacts") is not True:
+        return []  # Historical releases without an updater remain reproducible.
+    if not config.get("plugins", {}).get("updater", {}).get("pubkey"):
+        raise ValueError("An updater public key is required")
+    if not re.fullmatch(r"(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)", version):
+        raise ValueError("Invalid updater version")
+    if published_at is None:
+        stamp = subprocess.run(["git", "-C", str(root), "show", "-s", "--format=%cI", "HEAD"], capture_output=True, text=True, check=True)
+        published_at = datetime.datetime.fromisoformat(stamp.stdout.strip()).astimezone(datetime.timezone.utc).isoformat().replace("+00:00", "Z")
+    platforms = {}
+    staged = []
+    for folder, (target, source_name, name) in updater_names(version).items():
+        package = one_file(artifacts / folder, source_name)
+        signature = one_file(artifacts / folder, source_name + ".sig")
+        if signature.stat().st_size > 4096:
+            raise ValueError("Updater signature is too large")
+        verify(root, package, signature)
+        for source, destination_name in [(package, name), (signature, name + ".sig")]:
+            destination = output / destination_name
+            if destination.exists() and destination.read_bytes() != source.read_bytes():
+                raise ValueError(f"Updater conflicts with installer: {destination_name}")
+            if not destination.exists():
+                shutil.copyfile(source, destination)
+            staged.append(destination)
+        with package.open("rb") as stream:
+            digest = hashlib.file_digest(stream, "sha256").hexdigest()
+        platforms[target] = {"name": name, "signature": signature.read_text(encoding="utf-8").strip(),
+                             "size": package.stat().st_size, "sha256": digest}
+        if target.startswith("windows-"):
+            platforms[target + "-nsis"] = platforms[target].copy()
+            msi_name = name.replace("-setup.exe", "_en-US.msi")
+            msi = one_file(artifacts / folder, msi_name)
+            msi_signature = one_file(artifacts / folder, msi_name + ".sig")
+            if msi_signature.stat().st_size > 4096:
+                raise ValueError("Updater signature is too large")
+            verify(root, msi, msi_signature)
+            # MSI is already included in the ordinary installer set.
+            shutil.copyfile(msi_signature, output / (msi_name + ".sig"))
+            with msi.open("rb") as stream:
+                digest = hashlib.file_digest(stream, "sha256").hexdigest()
+            platforms[target + "-msi"] = {"name": msi_name, "signature": msi_signature.read_text(encoding="utf-8").strip(), "size": msi.stat().st_size, "sha256": digest}
+            staged.append(output / (msi_name + ".sig"))
+    for manifest_name, base in [("latest.json", "https://github.com/CMMUU/routedeck"), ("latest-gitee.json", "https://gitee.com/cmmuu/routedeck")]:
+        manifest = {"version": version, "notes": notes, "pub_date": published_at, "platforms": {}}
+        for target, data in platforms.items():
+            manifest["platforms"][target] = {key: value for key, value in data.items() if key != "name"}
+            manifest["platforms"][target]["url"] = f"{base}/releases/download/v{version}/{data['name']}"
+        path = output / manifest_name
+        path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8", newline="\n")
+        staged.append(path)
+    return staged

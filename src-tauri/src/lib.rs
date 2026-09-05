@@ -1,3 +1,4 @@
+mod app_update;
 mod appearance;
 mod config;
 mod diagnostics;
@@ -10,6 +11,7 @@ mod node_details;
 mod openai_policy;
 mod platform;
 mod profile_service;
+mod program_proxy;
 mod runtime;
 mod storage;
 mod subscription;
@@ -282,7 +284,7 @@ async fn refresh_profile(
     let result = profile_service::refresh_profile(&app, profile_id)
         .await
         .map_err(dto)?;
-    if result.profile.openai_policy.auto_maintain {
+    if result.updated && result.profile.openai_policy.auto_maintain {
         let _ = openai_policy::start_generation(&app, profile_id, true);
     }
     Ok(result)
@@ -567,6 +569,16 @@ fn system_proxy_status(app: AppHandle) -> SystemProxyStatus {
 }
 
 #[tauri::command]
+fn check_system_proxy_compatibility(
+    app: AppHandle,
+) -> Result<platform::ProxyCompatibility, AppErrorDto> {
+    let settings = AppStorage::from_app(&app)
+        .and_then(|storage| storage.settings())
+        .map_err(dto)?;
+    platform::proxy_compatibility(settings.mixed_port).map_err(dto)
+}
+
+#[tauri::command]
 fn set_network_mode(
     app: AppHandle,
     state: State<'_, MihomoRuntime>,
@@ -789,6 +801,8 @@ fn show_home_window(app: &AppHandle) {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             show_home_window(app);
         }))
@@ -797,6 +811,8 @@ pub fn run() {
             None,
         ))
         .manage(MihomoRuntime::default())
+        .manage(app_update::AppUpdateManager::default())
+        .manage(program_proxy::ProgramProxyManager::default())
         .manage(SubscriptionImportGuard::default())
         .manage(OpenAiPolicyTaskManager::default())
         .manage(GlobalTrafficMonitor::default())
@@ -870,6 +886,13 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             app_info,
+            app_update::check_app_update,
+            app_update::app_update_status,
+            app_update::save_update_preferences,
+            app_update::download_app_update,
+            app_update::cancel_app_update,
+            app_update::install_app_update,
+            app_update::open_official_release,
             get_settings,
             get_user_rules,
             parse_user_rules_text,
@@ -897,6 +920,12 @@ pub fn run() {
             runtime_logs,
             clear_runtime_logs,
             system_proxy_status,
+            check_system_proxy_compatibility,
+            program_proxy::list_proxy_programs,
+            program_proxy::save_proxy_program,
+            program_proxy::delete_proxy_program,
+            program_proxy::launch_proxy_program,
+            program_proxy::choose_proxy_program,
             tun_helper_status,
             install_tun_helper,
             repair_tun_helper,

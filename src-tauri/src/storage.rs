@@ -56,6 +56,31 @@ impl AppStorage {
         write_json_atomic(&self.root.join("settings.json"), settings)
     }
 
+    pub fn programs(&self) -> AppResult<crate::program_proxy::ProgramDocument> {
+        let path = self.root.join("proxy-programs.json");
+        if !path.exists() {
+            return Ok(crate::program_proxy::ProgramDocument::default());
+        }
+        if fs::metadata(&path)?.len() > 4 * 1024 * 1024 {
+            return Err(AppError::Io("程序代理清单超过大小限制".into()));
+        }
+        let document: crate::program_proxy::ProgramDocument = read_json(&path)?;
+        document.validate()?;
+        Ok(document)
+    }
+
+    pub fn save_programs(&self, document: &crate::program_proxy::ProgramDocument) -> AppResult<()> {
+        document.validate()?;
+        if serde_json::to_vec_pretty(document)
+            .map_err(|error| AppError::Io(error.to_string()))?
+            .len()
+            > 4 * 1024 * 1024
+        {
+            return Err(AppError::Io("程序代理清单超过大小限制".into()));
+        }
+        write_json_atomic(&self.root.join("proxy-programs.json"), document)
+    }
+
     pub fn user_rules(&self) -> AppResult<UserRulesDocument> {
         let path = self.root.join("user-rules.json");
         if !path.exists() {

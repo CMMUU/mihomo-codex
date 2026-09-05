@@ -15,6 +15,8 @@ pub enum AppError {
     Io(String),
     #[error("订阅请求失败: {0}")]
     Subscription(String),
+    #[error("应用更新失败: {0}")]
+    Update(String),
     #[error("配置处理失败: {0}")]
     Config(String),
     #[error("Mihomo 运行失败: {0}")]
@@ -31,6 +33,7 @@ impl AppError {
             Self::Conflict(_) => "STATE_CONFLICT",
             Self::Io(_) => "IO_ERROR",
             Self::Subscription(_) => "SUBSCRIPTION_ERROR",
+            Self::Update(_) => "UPDATE_ERROR",
             Self::Config(_) => "CONFIG_ERROR",
             Self::Runtime(_) => "CORE_ERROR",
             Self::Platform(_) => "PLATFORM_ERROR",
@@ -43,6 +46,7 @@ impl AppError {
             Self::NotFound(_) | Self::Io(_) => "storage",
             Self::Conflict(_) => "state",
             Self::Subscription(_) => "subscription",
+            Self::Update(_) => "update",
             Self::Config(_) => "config",
             Self::Runtime(_) => "runtime",
             Self::Platform(_) => "platform",
@@ -52,7 +56,7 @@ impl AppError {
     pub fn retryable(&self) -> bool {
         matches!(
             self,
-            Self::Subscription(_) | Self::Runtime(_) | Self::Platform(_)
+            Self::Subscription(_) | Self::Update(_) | Self::Runtime(_) | Self::Platform(_)
         )
     }
 

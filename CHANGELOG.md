@@ -1,7 +1,30 @@
 # Changelog
 
+## 0.7.0 - Unreleased
+
+- Replace the release-page-only update action with signed in-app downloads, progress, cancellation, SHA-256 verification and explicit install/restart confirmation.
+- Add independently selectable GitHub/Gitee channels and an automatic mode that chooses the newest available stable release and only fails over between byte-identical signed packages.
+- Check updates after startup and every six hours while enabled; keep automatic downloading opt-in and never automatically stop the proxy to install.
+- Keep Windows NSIS/MSI installer formats, and provide signed macOS archives and Linux AppImage updates. Existing non-updater versions need a one-time manual upgrade.
+- Gate all six application version fields and release tags, verify updater signatures before publication, generate channel-specific manifests and synchronize Gitee manifests only after their packages.
+- Include the previously unreleased 0.6.0/0.6.1 subscription, system-proxy compatibility, hidden helper windows, program management and UI fixes below.
+
+## 0.6.1 - Unreleased
+
+- Write one Windows system-proxy endpoint for HTTP and HTTPS CONNECT compatibility, while recognizing older protocol-map leases and preserving safe restoration when another proxy client takes ownership.
+- Add a read-only Settings proxy-format check using the HTTP library's actual parser; it does not claim to verify a target application's effective route or WebSocket stream.
+- Bypass environment proxies for the local Mihomo controller and avoid automatic OpenAI policy regeneration when a subscription refresh returned unchanged content.
+- Add a Windows Program Proxy page with revision-checked add/edit/delete persistence and opt-in launch. Environment mode configures only the new process; Chromium/Electron mode also supplies explicit proxy arguments and disables QUIC. Neither mode forcibly intercepts arbitrary programs or modifies global settings.
+- Block launches when the core is stopped, the local port is unavailable, the executable is missing or an existing instance is detected. Never kill an existing application; deleting a list entry does not uninstall it or close its process.
+- Keep console subprocesses hidden, pass arguments literally without a command shell, and retain drafts after errors or concurrent edits. Actual application proxy support and authenticated long-session stability require manual acceptance.
+
 ## 0.6.0 - Unreleased
 
+- Hide the Windows console when launching the isolated Mihomo process for OpenAI failover generation and node benchmarking.
+- Retry subscription HTTP 403 responses with Mihomo-compatible request headers and bounded user-agent fallbacks, while keeping one 30-second request/body deadline and redacting token-bearing URLs from transport errors.
+- Skip duplicate subscription revisions and live reloads when a successful refresh returns unchanged source, including serialized re-checks after concurrent refreshes.
+- Add a Settings update panel with an optional quiet startup check, an explicit manual check, and a validated official stable-release link; it never downloads, installs, restarts, or changes proxy state in the background.
+- Unify sidebar navigation states and rounded scrollbars across themes, remove the accidental rectangular navigation backdrop, and keep focus/hover styling inside clipped rounded bounds.
 - Rename the application, window and tray branding to RouteDeck, and the repository, npm/Cargo package and main executable to `routedeck`.
 - Update the helper's main-application lookup and the branding, release and repository-sync checks to the new names.
 - Retain `com.cmmuu.mihomodesktop`, the existing application-data directory, the `mihomo-tun-helper` binary and service identity, and the `# mihomo-codex-rule:` metadata format for compatibility.

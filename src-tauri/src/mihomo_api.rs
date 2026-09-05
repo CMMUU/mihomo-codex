@@ -20,6 +20,7 @@ impl MihomoApiClient {
         let base_url = Url::parse(&format!("http://127.0.0.1:{controller_port}/"))
             .map_err(|error| AppError::Runtime(error.to_string()))?;
         let client = reqwest::Client::builder()
+            .no_proxy()
             .timeout(Duration::from_secs(10))
             .build()
             .map_err(|error| AppError::Runtime(error.to_string()))?;

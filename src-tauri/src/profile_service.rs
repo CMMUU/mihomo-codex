@@ -168,6 +168,32 @@ pub async fn create_subscription_profile(
     }
 }
 
+fn unchanged_operation_result(
+    profile: &ProfileRecord,
+    revision: ConfigRevision,
+    source: &str,
+) -> AppResult<ProfileOperationResult> {
+    Ok(ProfileOperationResult {
+        profile: PublicProfileRecord::from(profile),
+        revision,
+        summary: inspect_profile(source).map_err(AppError::Config)?,
+        updated: false,
+    })
+}
+
+fn unchanged_operation_if_source_matches(
+    storage: &AppStorage,
+    profile: &ProfileRecord,
+    revision: &ConfigRevision,
+    candidate_source: &str,
+) -> AppResult<Option<ProfileOperationResult>> {
+    let previous_source = storage.load_revision_source(profile.id, revision.id)?;
+    if previous_source != candidate_source {
+        return Ok(None);
+    }
+    unchanged_operation_result(profile, revision.clone(), &previous_source).map(Some)
+}
+
 pub async fn refresh_profile(
     app: &AppHandle,
     profile_id: Uuid,
@@ -192,22 +218,31 @@ pub async fn refresh_profile(
     if fetched.not_modified {
         let revision = latest.ok_or_else(|| AppError::NotFound("当前订阅版本".to_string()))?;
         let source = storage.load_revision_source(profile_id, revision.id)?;
-        return Ok(ProfileOperationResult {
-            profile: PublicProfileRecord::from(&profile),
-            revision,
-            summary: inspect_profile(&source).map_err(AppError::Config)?,
-            updated: false,
-        });
+        return unchanged_operation_result(&profile, revision, &source);
     }
-    persist_candidate(
+    let source = fetched
+        .content
+        .ok_or_else(|| AppError::Subscription("订阅内容为空".to_string()))?;
+    // The fetch stays outside the configuration transaction. Once mutation is
+    // serialized, re-read the latest revision so concurrent refreshes cannot
+    // both persist and hot-reload the same response body.
+    let permit = user_rules::acquire_configuration(app)?;
+    let profile = storage.load_profile(profile_id)?;
+    if let Some(revision) = storage.list_revisions(profile_id)?.into_iter().next() {
+        if let Some(result) =
+            unchanged_operation_if_source_matches(&storage, &profile, &revision, &source)?
+        {
+            return Ok(result);
+        }
+    }
+    persist_candidate_with_permit(
         app,
         &storage,
         profile,
-        fetched
-            .content
-            .ok_or_else(|| AppError::Subscription("订阅内容为空".to_string()))?,
+        source,
         Some(fetched.metadata),
         false,
+        &permit,
     )
     .await
 }
@@ -285,6 +320,27 @@ async fn persist_candidate(
     force_activate: bool,
 ) -> AppResult<ProfileOperationResult> {
     let permit = user_rules::acquire_configuration(app)?;
+    persist_candidate_with_permit(
+        app,
+        storage,
+        profile,
+        source,
+        metadata,
+        force_activate,
+        &permit,
+    )
+    .await
+}
+
+async fn persist_candidate_with_permit(
+    app: &AppHandle,
+    storage: &AppStorage,
+    profile: ProfileRecord,
+    source: String,
+    metadata: Option<crate::models::SubscriptionMetadata>,
+    force_activate: bool,
+    permit: &user_rules::ConfigurationMutationPermit,
+) -> AppResult<ProfileOperationResult> {
     // Fetching can overlap unrelated work; take profile policy/settings only
     // after entering the short mutation transaction, never from the fetch start.
     let profile = storage.load_profile(profile.id)?;
@@ -321,7 +377,7 @@ async fn persist_candidate(
                 revision = Some(saved);
                 Ok(())
             },
-            &permit,
+            permit,
         )
         .await?;
     } else {
@@ -445,6 +501,54 @@ mod tests {
                 .expect("immutable cache"),
             "stale-cache: true\n"
         );
+        std::fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn identical_refresh_source_reuses_the_existing_revision() {
+        let root = std::env::temp_dir().join(format!("routedeck-refresh-{}", Uuid::new_v4()));
+        let storage = AppStorage::from_root(root.clone()).expect("storage");
+        let profile = storage
+            .create_profile(
+                "fixture".into(),
+                ProfileSource::RemoteSubscription {
+                    url: "https://subscription.example.invalid/config".into(),
+                    user_agent: "clash.meta".into(),
+                },
+            )
+            .expect("profile");
+        let source = "proxies: []\nproxy-groups: []\nrules: ['MATCH,DIRECT']\n";
+        let revision = storage
+            .save_revision(
+                profile.id,
+                source,
+                source,
+                None,
+                ValidationReport {
+                    valid: true,
+                    ..Default::default()
+                },
+                OpenAiPolicy::default(),
+            )
+            .expect("revision");
+
+        let result = unchanged_operation_if_source_matches(&storage, &profile, &revision, source)
+            .expect("comparison")
+            .expect("unchanged result");
+        assert!(!result.updated);
+        assert_eq!(result.revision.id, revision.id);
+        assert_eq!(
+            storage.list_revisions(profile.id).expect("revisions").len(),
+            1
+        );
+        assert!(unchanged_operation_if_source_matches(
+            &storage,
+            &profile,
+            &revision,
+            "proxies: []\nrules: []\n",
+        )
+        .expect("comparison")
+        .is_none());
         std::fs::remove_dir_all(root).expect("cleanup");
     }
 }

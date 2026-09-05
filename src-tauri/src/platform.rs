@@ -280,13 +280,96 @@ impl WindowsProxyLease {
 
 #[cfg(any(windows, test))]
 fn windows_proxy_server(port: u16) -> String {
-    format!("http=127.0.0.1:{port};https=127.0.0.1:{port};socks=127.0.0.1:{port}")
+    // A single HTTP CONNECT endpoint works for HTTPS too. Some clients treat
+    // WinINET's protocol-map syntax as one URI and silently fall back to DIRECT.
+    format!("127.0.0.1:{port}")
 }
 
 #[cfg(any(windows, test))]
 fn windows_endpoint_owned(current: &SystemProxySnapshot, port: u16) -> bool {
     matches!(current, SystemProxySnapshot::Windows { proxy_enable: 1, proxy_server: Some(server), .. }
-        if server == &windows_proxy_server(port))
+        if server == &windows_proxy_server(port)
+            || server == &format!("http=127.0.0.1:{port};https=127.0.0.1:{port};socks=127.0.0.1:{port}")
+            || server == &format!("http=127.0.0.1:{port};https=127.0.0.1:{port}"))
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProxyCompatibility {
+    pub supported: bool,
+    pub system_configured: bool,
+    pub compatible: bool,
+    pub expected_proxy: String,
+    pub resolved_http: Option<String>,
+    pub resolved_https: Option<String>,
+    pub detail: String,
+}
+
+/// Read-only: feed the current Windows proxy address to the real HTTP parser.
+/// Do not enable hyper-util's system feature just for diagnostics: Cargo feature
+/// unification would silently change the routing of unrelated reqwest clients.
+/// This validates the address format, not any other process's effective route.
+pub fn proxy_compatibility(port: u16) -> AppResult<ProxyCompatibility> {
+    let expected_proxy = format!("http://127.0.0.1:{port}");
+    #[cfg(windows)]
+    {
+        use hyper_util::client::proxy::matcher::Matcher;
+        let current = capture_system_proxy()?;
+        let system_configured =
+            windows_same_route(&current, &windows_applied_proxy(&current, port));
+        let server = match &current {
+            SystemProxySnapshot::Windows {
+                proxy_enable: 1,
+                proxy_server: Some(server),
+                ..
+            } => server.as_str(),
+            _ => "",
+        };
+        let matcher = Matcher::builder().http(server).https(server).build();
+        let resolve = |target: &str| {
+            let uri = target.parse().ok()?;
+            let proxy = matcher.intercept(&uri)?;
+            let parsed = url::Url::parse(&proxy.uri().to_string()).ok()?;
+            // Never expose proxy credentials, paths or query strings to the UI.
+            Some(format!(
+                "{}://{}:{}",
+                parsed.scheme(),
+                parsed.host_str()?,
+                parsed.port_or_known_default()?
+            ))
+        };
+        let resolved_http = resolve("http://chatgpt.com/");
+        let resolved_https = resolve("https://chatgpt.com/backend-api/codex/responses");
+        let compatible = system_configured
+            && resolved_http.as_deref() == Some(expected_proxy.as_str())
+            && resolved_https.as_deref() == Some(expected_proxy.as_str());
+        let detail = if compatible {
+            "Windows 代理地址通过 HTTP/HTTPS 格式校验。目标应用仍可能受环境变量或内部代理设置影响；WebSocket 和长连接需实际验证。"
+        } else if !system_configured {
+            "系统代理未使用 RouteDeck 的兼容格式，或已由其他程序接管。此检查不会更改设置。"
+        } else {
+            "Windows 代理地址未通过 HTTP/HTTPS 格式校验；此检查不会修改系统设置。"
+        };
+        Ok(ProxyCompatibility {
+            supported: true,
+            system_configured,
+            compatible,
+            expected_proxy,
+            resolved_http,
+            resolved_https,
+            detail: detail.into(),
+        })
+    }
+    #[cfg(not(windows))]
+    Ok(ProxyCompatibility {
+        supported: false,
+        system_configured: false,
+        compatible: false,
+        expected_proxy,
+        resolved_http: None,
+        resolved_https: None,
+        detail: "此兼容性检查目前针对 Windows 系统代理。".into(),
+    })
 }
 
 #[cfg(any(windows, test))]
@@ -885,6 +968,60 @@ mod windows_proxy_tests {
             applied,
             committed,
         }
+    }
+
+    #[test]
+    fn compatible_format_and_legacy_leases_restore_original_owner() {
+        assert_eq!(windows_proxy_server(7890), "127.0.0.1:7890");
+        for server in [
+            "http=127.0.0.1:7890;https=127.0.0.1:7890;socks=127.0.0.1:7890",
+            "http=127.0.0.1:7890;https=127.0.0.1:7890",
+        ] {
+            let mut old_current = original();
+            if let SystemProxySnapshot::Windows { proxy_server, .. } = &mut old_current {
+                *proxy_server = Some(server.into());
+            }
+            let legacy = WindowsProxyLease::Legacy(original());
+            assert_eq!(legacy.restoration(&old_current, 7890), Some(original()));
+            assert!(!legacy.owns(&old_current, 789));
+            let tracked = WindowsProxyLease::Tracked {
+                original: original(),
+                before: Some(original()),
+                applied: old_current.clone(),
+                committed: true,
+            };
+            assert!(tracked.owns(&old_current, 7890));
+            let upgraded = windows_applied_proxy(&old_current, 7890);
+            let migrated = WindowsProxyLease::Tracked {
+                original: tracked.original().clone(),
+                before: Some(old_current),
+                applied: upgraded.clone(),
+                committed: true,
+            };
+            assert_eq!(migrated.restoration(&upgraded, 7890), Some(original()));
+            assert!(migrated.restoration(&original(), 7890).is_none());
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn network_library_recognizes_new_format_without_registry_mutation() {
+        use hyper_util::client::proxy::matcher::Matcher;
+        let destination = "https://chatgpt.com/backend-api/codex/responses"
+            .parse()
+            .unwrap();
+        let value = windows_proxy_server(7890);
+        let matcher = Matcher::builder().http(&value).https(&value).build();
+        assert_eq!(
+            matcher.intercept(&destination).unwrap().uri().to_string(),
+            "http://127.0.0.1:7890/"
+        );
+        let old = "http=127.0.0.1:7890;https=127.0.0.1:7890;socks=127.0.0.1:7890";
+        assert!(Matcher::builder()
+            .https(old)
+            .build()
+            .intercept(&destination)
+            .is_none());
     }
 
     #[test]

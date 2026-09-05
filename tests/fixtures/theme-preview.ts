@@ -7,13 +7,16 @@ import { mockIPC } from "@tauri-apps/api/mocks";
 import packageInfo from "../../package.json";
 import type { InvokeArgs } from "@tauri-apps/api/core";
 import type {
-  AppSettings, ProfileDetails, ProfileRecord,
+  AppSettings, AppUpdateStatus, UpdateSource, ProfileDetails, ProfileRecord,
   UserRule, UserRulesState, UserRulesValidation,
+  ProgramInput, ProgramState,
 } from "../../src/types";
 import type { ThemePreference } from "../../src/theme";
 
 const STORAGE_KEY = "routedeck:test-fixture:theme-preview:v1";
 const RULES_STORAGE_KEY = "routedeck:test-fixture:user-rules:v1";
+const PROGRAMS_STORAGE_KEY = "routedeck:test-fixture:proxy-programs:v1";
+const previewWindows = new URLSearchParams(location.search).get("platform") === "windows";
 const THEMES: readonly ThemePreference[] = ["system", "light", "dark", "purple"];
 type FixtureState = { theme: ThemePreference; systemDark: boolean };
 
@@ -39,6 +42,38 @@ let failNextRulesSave = false;
 let rulesSaveCount = 0;
 let rulesRollbackCount = 0;
 let rulesApplyCount = 0;
+
+let programs: ProgramState = { revision: 0, supported: true, proxyEndpoint: "http://127.0.0.1:17890", coreRunning: true, programs: [] };
+try {
+  const saved = JSON.parse(localStorage.getItem(PROGRAMS_STORAGE_KEY) ?? "null") as ProgramState | null;
+  if (saved && Array.isArray(saved.programs)) programs = { ...programs, revision: saved.revision, programs: saved.programs.map((program) => ({ ...program, runningPid: null })) };
+} catch { /* Isolated fixture only; never read actual application data. */ }
+let programLaunches = 0;
+let failProgramSave = false;
+let cancelProgramPicker = false;
+let updatePreferences = { updateSource: "auto" as UpdateSource, autoCheckUpdates: false, autoDownloadUpdates: false };
+let fixtureUpdate: AppUpdateStatus = { phase: "idle", info: null, downloadedBytes: 0, totalBytes: 0, error: null };
+let updateScenario = "available";
+let cancelUpdateDownload = false;
+let updateInstallCount = 0;
+window.addEventListener("routedeck-fixture-update", (event) => { updateScenario = (event as CustomEvent).detail.scenario; });
+window.addEventListener("routedeck-fixture-programs", (event) => {
+  const detail = (event as CustomEvent).detail;
+  failProgramSave = detail.failSave ?? failProgramSave;
+  cancelProgramPicker = detail.cancelPicker ?? cancelProgramPicker;
+  programs.coreRunning = detail.coreRunning ?? programs.coreRunning;
+  if (detail.externalUpdate) {
+    programs.revision++;
+    if (programs.programs[0]) programs.programs[0].name = "其他窗口更新的名称";
+  }
+  if (detail.missing && programs.programs[0]) programs.programs[0].available = false;
+  if (detail.exited) programs.programs.forEach((program) => { program.runningPid = null; });
+});
+function programState() { return structuredClone(programs); }
+function persistPrograms() {
+  localStorage.setItem(PROGRAMS_STORAGE_KEY, JSON.stringify(programs));
+  return programState();
+}
 
 function element<T extends HTMLElement = HTMLElement>(id: string): T {
   const found = document.getElementById(id);
@@ -362,14 +397,18 @@ function settings(): AppSettings {
     mixedPort: 17890,
     controllerPort: 19090,
     updateChannel: "stable",
+    ...updatePreferences,
     diagnosticsRetentionDays: 7,
   };
 }
 
 const readonlyReplies: Record<string, () => unknown> = {
-  app_info: () => ({ productName: "RouteDeck", version: `${packageInfo.version} · 合成预览`, targetOs: "macos", targetArch: "aarch64" }),
+  app_info: () => ({ productName: "RouteDeck", version: `${packageInfo.version} · 合成预览`, targetOs: previewWindows ? "windows" : "macos", targetArch: previewWindows ? "x86_64" : "aarch64" }),
+  app_update_status: () => structuredClone(fixtureUpdate),
   get_settings: settings,
   get_user_rules: userRulesState,
+  list_proxy_programs: programState,
+  check_system_proxy_compatibility: () => ({ supported: true, systemConfigured: true, compatible: true, expectedProxy: programs.proxyEndpoint, resolvedHttp: programs.proxyEndpoint, resolvedHttps: programs.proxyEndpoint, detail: "合成检查：HTTP/HTTPS 解析已指向本地代理；未读取真实注册表，也未验证真实长连接。" }),
   probe_mihomo: () => ({ available: true, path: "/fixture-only/mihomo", version: "v0.0.0-fixture", message: "纯合成状态，真实内核未启动" }),
   runtime_status: () => ({
     state: "running", phase: "running", binaryAvailable: true,
@@ -417,6 +456,77 @@ function payloadRecord(payload: InvokeArgs | undefined): Record<string, unknown>
 
 mockIPC(async (command, payload) => {
   const args = payloadRecord(payload);
+  if (command === "save_update_preferences") {
+    const source = args.source as UpdateSource;
+    if (source !== updatePreferences.updateSource) fixtureUpdate = { phase: "idle", info: null, downloadedBytes: 0, totalBytes: 0, error: null };
+    updatePreferences = { updateSource: source, autoCheckUpdates: Boolean(args.autoCheck), autoDownloadUpdates: Boolean(args.autoDownload) };
+    return settings();
+  }
+  if (command === "check_app_update") {
+    await new Promise((resolve) => window.setTimeout(resolve, 180));
+    if (updateScenario === "failed") {
+      fixtureUpdate = { ...fixtureUpdate, info: null, phase: "failed", error: "合成状态：GitHub HTTP 403；Gitee HTTP 503" };
+      throw new Error(fixtureUpdate.error!);
+    }
+    const latestVersion = updateScenario === "ahead" ? "v0.1.0" : updateScenario === "current" ? `v${packageInfo.version}` : "v9.0.0";
+    const source = updatePreferences.updateSource === "github" ? "github" : "gitee";
+    fixtureUpdate = { phase: updateScenario === "ahead" ? "ahead" : updateScenario === "current" ? "current" : "available", downloadedBytes: 0, totalBytes: 0, error: null,
+      info: { currentVersion: packageInfo.version, latestVersion, available: !["ahead", "current"].includes(updateScenario), ahead: updateScenario === "ahead", notes: "合成更新说明：演示双渠道回退与确认安装。未访问真实发布服务。", publishedAt: stamp, source,
+        releaseUrl: `https://${source}.com/${source === "github" ? "CMMUU" : "cmmuu"}/routedeck/releases/tag/${latestVersion}`,
+        channels: updatePreferences.updateSource === "auto" ? [{ source: "github", version: null, error: "合成 HTTP 403；已使用 Gitee" }, { source: "gitee", version: latestVersion, error: null }] : [{ source, version: latestVersion, error: null }],
+      } };
+    return structuredClone(fixtureUpdate);
+  }
+  if (command === "download_app_update") {
+    if (!fixtureUpdate.info?.available || fixtureUpdate.info.latestVersion !== args.versionTag) throw new Error("合成版本冲突");
+    cancelUpdateDownload = false;
+    fixtureUpdate = { ...fixtureUpdate, phase: "downloading", totalBytes: 20 * 1048576, downloadedBytes: 0, error: null };
+    for (let step = 1; step <= 8; step++) {
+      await new Promise((resolve) => window.setTimeout(resolve, 180));
+      if (cancelUpdateDownload) { fixtureUpdate.phase = "cancelled"; fixtureUpdate.error = "合成下载已取消"; throw new Error(fixtureUpdate.error); }
+      fixtureUpdate.downloadedBytes = fixtureUpdate.totalBytes * step / 8;
+    }
+    if (updateScenario === "bad-signature") { fixtureUpdate.phase = "failed"; fixtureUpdate.error = "合成签名校验失败，已拒绝安装"; throw new Error(fixtureUpdate.error); }
+    fixtureUpdate.phase = "ready";
+    return structuredClone(fixtureUpdate);
+  }
+  if (command === "cancel_app_update") { cancelUpdateDownload = true; return; }
+  if (command === "install_app_update") {
+    if (!args.confirmed || fixtureUpdate.phase !== "ready" || args.versionTag !== fixtureUpdate.info?.latestVersion) throw new Error("合成安装条件不满足");
+    document.documentElement.dataset.fixtureUpdateInstalls = String(++updateInstallCount);
+    fixtureUpdate.phase = "installing";
+    return; // Synthetic receipt only; no processes, files, proxy changes or exit.
+  }
+  if (command === "choose_proxy_program") {
+    return cancelProgramPicker ? null : "C:\\Program Files\\Example App\\Example.exe";
+  }
+  if (command === "save_proxy_program" || command === "delete_proxy_program") {
+    await new Promise((resolve) => window.setTimeout(resolve, 100));
+    if (args.expectedRevision !== programs.revision) throw ruleError("STATE_CONFLICT", "程序清单已更新，请刷新列表后重试；编辑内容仍保留");
+    if (command === "save_proxy_program") {
+      if (failProgramSave) { failProgramSave = false; throw ruleError("IO_ERROR", "模拟保存失败；原清单未变化"); }
+      const input = args.input as ProgramInput;
+      if (!input.name.trim() || !/^[a-z]:\\.+\.exe$/i.test(input.executable)) throw ruleError("INVALID_INPUT", "请选择存在的 .exe 文件");
+      const old = programs.programs.find((program) => program.id === input.id);
+      if (input.id && !old) throw ruleError("NOT_FOUND", "程序条目已被删除");
+      const entry = { ...input, id: input.id ?? crypto.randomUUID(), available: true, runningPid: old?.runningPid ?? null };
+      if (old) programs.programs[programs.programs.indexOf(old)] = entry;
+      else programs.programs.push(entry);
+    } else {
+      if (!programs.programs.some((program) => program.id === args.programId)) throw ruleError("NOT_FOUND", "程序条目不存在");
+      programs.programs = programs.programs.filter((program) => program.id !== args.programId);
+    }
+    programs.revision++;
+    return persistPrograms();
+  }
+  if (command === "launch_proxy_program") {
+    if (args.expectedRevision !== programs.revision) throw ruleError("STATE_CONFLICT", "程序清单已更新，未启动程序，请刷新后重新确认");
+    const program = programs.programs.find((entry) => entry.id === args.programId);
+    if (!program || !program.available || !programs.coreRunning || program.runningPid) throw ruleError("STATE_CONFLICT", "合成启动条件不满足");
+    program.runningPid = 4567;
+    document.documentElement.dataset.fixtureProgramLaunches = String(++programLaunches);
+    return programState(); // Simulation only. No native process or network calls.
+  }
   if (command === "validate_user_rules") return validateRules(args.rules);
   if (command === "parse_user_rules_text") {
     if (typeof args.text !== "string") throw ruleError("INVALID_INPUT", "规则文本必须是字符串");

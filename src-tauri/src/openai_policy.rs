@@ -599,15 +599,16 @@ impl BenchmarkCore {
         drop(mixed_reservation);
         drop(controller_reservation);
 
-        let child = Command::new(binary)
+        let mut command = Command::new(binary);
+        command
             .arg("-d")
             .arg(&directory)
             .arg("-f")
             .arg(&config_path)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
+            .stderr(Stdio::null());
+        let child = spawn_benchmark_process(&mut command)
             .map_err(|error| AppError::Runtime(error.to_string()))?;
         let api =
             MihomoApiClient::from_endpoint(controller_port, settings.controller_secret.clone())?;
@@ -666,6 +667,17 @@ impl Drop for BenchmarkCore {
         let _ = self.child.wait();
         let _ = fs::remove_dir_all(&self.directory);
     }
+}
+
+fn spawn_benchmark_process(command: &mut Command) -> std::io::Result<Child> {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        // Redirecting stdio alone does not prevent Windows from creating a
+        // console for the isolated OpenAI benchmark core.
+        command.creation_flags(windows_sys::Win32::System::Threading::CREATE_NO_WINDOW);
+    }
+    command.spawn()
 }
 
 fn build_benchmark_config(
@@ -965,6 +977,79 @@ proxy-groups:
 rules:
   - MATCH,PROXY
 "#;
+
+    #[cfg(windows)]
+    #[test]
+    fn benchmark_window_child_fixture() {
+        if std::env::var("ROUTEDECK_BENCHMARK_WINDOW_FIXTURE").as_deref() != Ok("1") {
+            return;
+        }
+        use windows_sys::Win32::System::Console::GetConsoleWindow;
+        // CREATE_NO_WINDOW can retain console code-page state. What matters is
+        // that there is no window; this query does not interact with the desktop.
+        // SAFETY: this function only queries the calling process's console.
+        unsafe {
+            assert!(
+                GetConsoleWindow().is_null(),
+                "benchmark created a console window"
+            );
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn benchmark_process_starts_without_a_console_window() {
+        use std::io::Read;
+        use std::process::{Child, Command, Stdio};
+        use std::time::{Duration, Instant};
+
+        struct FixtureChild(Child);
+        impl Drop for FixtureChild {
+            fn drop(&mut self) {
+                let _ = self.0.kill();
+                let _ = self.0.wait();
+            }
+        }
+
+        let mut command = Command::new(std::env::current_exe().expect("test executable"));
+        command
+            .args([
+                "--exact",
+                "openai_policy::tests::benchmark_window_child_fixture",
+                "--nocapture",
+            ])
+            .env("ROUTEDECK_BENCHMARK_WINDOW_FIXTURE", "1")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped());
+        let mut child = FixtureChild(
+            super::spawn_benchmark_process(&mut command).expect("hidden benchmark fixture"),
+        );
+        let started = Instant::now();
+        loop {
+            if let Some(status) = child.0.try_wait().expect("fixture status") {
+                let mut diagnostic = String::new();
+                child
+                    .0
+                    .stderr
+                    .take()
+                    .expect("fixture stderr")
+                    .take(4096)
+                    .read_to_string(&mut diagnostic)
+                    .expect("fixture diagnostic");
+                assert!(
+                    status.success(),
+                    "benchmark console checks failed: {status}\n{diagnostic}"
+                );
+                break;
+            }
+            assert!(
+                started.elapsed() < Duration::from_secs(5),
+                "fixture timed out"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
 
     #[test]
     fn extracts_explicit_unique_candidates() {

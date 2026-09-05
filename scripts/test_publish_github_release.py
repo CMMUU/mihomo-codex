@@ -79,7 +79,7 @@ class ReleaseTests(unittest.TestCase):
         self.project = {"name": "routedeck", "version": "0.6.0", "license": "GPL-3.0-only"}
         for path in ("package.json", "src-tauri/tauri.conf.json"):
             (self.root / path).write_text(json.dumps(self.project), encoding="utf-8")
-        self.npm_lock = {"packages": {"": self.project, "node_modules/fixture": {
+        self.npm_lock = {"version": "0.6.0", "packages": {"": self.project, "node_modules/fixture": {
             "version": "1.0.0", "license": "MIT", "integrity": "sha256-" + "A" * 43 + "=",
             "resolved": "https://registry.npmjs.org/fixture/-/fixture-1.0.0.tgz",
         }}}
@@ -89,7 +89,7 @@ class ReleaseTests(unittest.TestCase):
         (self.root / "src-tauri/Cargo.lock").write_text(
             'version = 4\n[[package]]\nname = "fixture"\nversion = "1.0.0"\n'
             'source = "registry+https://github.com/rust-lang/crates.io-index"\n'
-            'checksum = "' + "0" * 64 + '"\n', encoding="utf-8")
+            'checksum = "' + "0" * 64 + '"\n[[package]]\nname = "routedeck"\nversion = "0.6.0"\n', encoding="utf-8")
         (self.root / "docs/发布说明-v0.6.0.md").write_text("Reviewed notes\n", encoding="utf-8")
         self.license = b"GPL source license fixture\n"
         (self.root / "third-party/Mihomo-LICENSE.txt").write_bytes(self.license)

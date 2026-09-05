@@ -1,7 +1,9 @@
 import "./styles.css";
 import { api, errorMessage, revisionLabel } from "./api";
+import { describeAppUpdate } from "./app-update";
 import { listen } from "@tauri-apps/api/event";
 import { mountRuleManager, ruleManagerMarkup } from "./rule-manager";
+import { mountProgramManager, programManagerMarkup, mountProxyCompatibility, proxyCompatibilityMarkup } from "./program-proxy";
 import {
   THEME_OPTIONS,
   ThemeController,
@@ -12,6 +14,9 @@ import type { ThemePreference, ThemeSnapshot } from "./theme";
 import type {
   AppInfo,
   AppSettings,
+  AppUpdateInfo,
+  AppUpdateStatus,
+  UpdateSource,
   BinaryInfo,
   CurrentNodeDetails,
   GlobalTrafficSnapshot,
@@ -58,6 +63,7 @@ type ViewName =
   | "profiles"
   | "subscriptions"
   | "proxies"
+  | "programs"
   | "rules"
   | "connections"
   | "logs"
@@ -67,6 +73,7 @@ type ViewName =
 const store: {
   view: ViewName;
   appInfo: AppInfo | null;
+  appUpdate: AppUpdateInfo | null;
   settings: AppSettings | null;
   binary: BinaryInfo | null;
   runtime: RuntimeStatus | null;
@@ -87,6 +94,7 @@ const store: {
 } = {
   view: "overview",
   appInfo: null,
+  appUpdate: null,
   settings: null,
   binary: null,
   runtime: null,
@@ -114,6 +122,14 @@ let openAiTaskFinishedAt: string | null = null;
 let networkModeSwitching = false;
 let runtimeActionInFlight = false;
 let settingsSaving = false;
+let appUpdateChecking = false;
+let appUpdateError: string | null = null;
+let appUpdateStatus: AppUpdateStatus = { phase: "idle", info: null, downloadedBytes: 0, totalBytes: 0, error: null };
+let appUpdateActionBusy = false;
+let appUpdatePollBusy = false;
+let appUpdateOperationId = 0;
+let automaticUpdateCheckScheduled = false;
+let updateCheckAttemptedThisSession = false;
 let appearanceFeedback = "";
 const OPENAI_GROUP_NAME = "🤖 OpenAI 自动灾备";
 document.documentElement.dataset.view = store.view;
@@ -130,6 +146,7 @@ app.innerHTML = `
         <button class="nav-item" data-view="profiles"><span>▣</span>配置</button>
         <button class="nav-item" data-view="subscriptions"><span>↻</span>订阅</button>
         <button class="nav-item" data-view="proxies"><span>◇</span>代理</button>
+        <button class="nav-item" data-view="programs"><span>▤</span>程序代理</button>
         <button class="nav-item" data-view="rules"><span>≡</span>规则</button>
         <button class="nav-item" data-view="connections"><span>⇄</span>连接</button>
         <button class="nav-item" data-view="logs"><span>⌁</span>日志</button>
@@ -349,6 +366,10 @@ app.innerHTML = `
         </article>
       </section>
 
+      <section class="view-stack is-hidden" id="programs-view">
+        ${programManagerMarkup}
+      </section>
+
       <section class="view-stack is-hidden" id="rules-view">
         ${ruleManagerMarkup}
       </section>
@@ -404,6 +425,52 @@ app.innerHTML = `
             <div class="span-2"><button class="button button-primary" type="submit">保存设置</button></div>
           </form>
           <div class="settings-note" id="network-mode-help">切换网络模式和端口前需要先停止 Mihomo。开启 TUN 前会检查权限和配置。</div>
+        </article>
+        ${proxyCompatibilityMarkup}
+        <article class="panel app-update-panel" id="app-update-panel" aria-busy="false">
+          <div class="panel-heading">
+            <div><div class="section-label">APPLICATION UPDATE</div><h2>应用更新</h2></div>
+            <span class="control-state-pill" id="app-update-state">待检查</span>
+          </div>
+          <div class="app-update-summary">
+            <div class="app-update-mark" aria-hidden="true">↑</div>
+            <div aria-live="polite"><strong id="app-update-title">尚未检查</strong><p id="app-update-message">从 GitHub / Gitee 获取官方稳定版；安装前由你确认。</p></div>
+          </div>
+          <div class="about-grid app-update-details">
+            <span>当前版本</span><strong id="app-update-current">—</strong>
+            <span>最新稳定版</span><strong id="app-update-latest">尚未检查</strong>
+            <span>发布日期</span><strong id="app-update-date">—</strong>
+            <span>当前渠道</span><strong id="app-update-source">—</strong>
+          </div>
+          <ul class="app-update-channels is-hidden" id="app-update-channels" aria-label="渠道检查结果"></ul>
+          <form id="update-preferences-form" class="app-update-preferences">
+            <label><span>更新来源</span><select id="settings-update-source"><option value="auto">自动 · 双渠道比较与容灾</option><option value="github">GitHub</option><option value="gitee">Gitee</option></select></label>
+            <label class="checkbox-row app-update-auto-check">
+              <input id="settings-auto-check-updates" name="autoCheckUpdates" type="checkbox" />
+              <span><strong>自动检查更新</strong><small>启动后延迟检查，运行期间每 6 小时检查一次。</small></span>
+            </label>
+            <label class="checkbox-row app-update-auto-check">
+              <input id="settings-auto-download-updates" type="checkbox" />
+              <span><strong>自动下载更新包</strong><small>默认关闭；开启后占用少量下载带宽，仍需确认安装。</small></span>
+            </label>
+            <button class="button button-quiet" id="app-update-save" type="submit">保存更新偏好</button>
+          </form>
+          <div class="app-update-progress is-hidden" id="app-update-progress"><progress id="app-update-progress-bar" max="100" value="0" aria-label="更新包下载进度"></progress><span id="app-update-progress-text" aria-live="off"></span></div>
+          <div class="app-update-controls">
+            <span class="hint">官方签名校验 · SHA-256 校验 · 禁止降级</span>
+            <div class="toolbar">
+              <button class="button button-quiet" id="app-update-check" type="button">立即检查</button>
+              <button class="button button-quiet is-hidden" id="app-update-open" type="button">发布页面</button>
+              <button class="button button-primary is-hidden" id="app-update-download" type="button">下载更新</button>
+              <button class="button button-quiet is-hidden" id="app-update-cancel" type="button">取消下载</button>
+              <button class="button button-primary is-hidden" id="app-update-install" type="button">安装并重启</button>
+            </div>
+          </div>
+          <details class="app-update-notes is-hidden" id="app-update-notes">
+            <summary>查看发布说明</summary>
+            <p id="app-update-notes-content"></p>
+          </details>
+          <p class="hint">自动模式选用可用渠道中的最高稳定版；仅同版本、同摘要、同签名的包可跨渠道回退。退出软件会清除尚未安装的下载缓存。Linux 内置更新适用于 AppImage。</p>
         </article>
         <article class="panel tun-helper-panel">
           <div class="panel-heading">
@@ -692,6 +759,7 @@ async function refreshBase() {
   renderSettings();
   renderOpenAiPolicy();
   renderGlobalTraffic();
+  scheduleAutomaticUpdateCheck();
 }
 
 function renderHeader() {
@@ -962,11 +1030,147 @@ function renderSettings() {
   ($("#settings-launch") as HTMLInputElement).checked = store.settings.launchAtLogin;
   ($("#settings-global-traffic") as HTMLInputElement).checked =
     store.settings.showGlobalTraffic;
+  ($("#settings-auto-check-updates") as HTMLInputElement).checked =
+    store.settings.autoCheckUpdates;
+  ($("#settings-auto-download-updates") as HTMLInputElement).checked = store.settings.autoDownloadUpdates;
+  ($("#settings-update-source") as HTMLSelectElement).value = store.settings.updateSource;
   ($("#settings-retention") as HTMLInputElement).value = String(
     store.settings.diagnosticsRetentionDays,
   );
   renderGlobalTraffic();
+  renderAppUpdate();
   renderTunHelper();
+}
+
+function renderAppUpdate() {
+  const presentation = describeAppUpdate(appUpdateStatus);
+  const state = $("#app-update-state")!;
+  state.textContent = presentation.badge;
+  state.classList.toggle("is-running", ["current", "ready"].includes(presentation.state));
+  state.classList.toggle("is-warning", presentation.state === "available");
+  state.classList.toggle("is-error", presentation.state === "failed");
+  $("#app-update-title")!.textContent = presentation.label;
+  $("#app-update-message")!.textContent = presentation.detail;
+  $("#app-update-current")!.textContent =
+    store.appInfo?.version ?? store.appUpdate?.currentVersion ?? "—";
+  $("#app-update-latest")!.textContent = store.appUpdate?.latestVersion ?? "尚未检查";
+  $("#app-update-date")!.textContent = formatDate(store.appUpdate?.publishedAt);
+  $("#app-update-source")!.textContent = store.appUpdate ? (store.appUpdate.source === "github" ? "GitHub" : "Gitee") : "—";
+  const channels = $("#app-update-channels")!;
+  channels.replaceChildren(...(store.appUpdate?.channels ?? []).map((channel) => {
+    const item = document.createElement("li");
+    item.classList.toggle("is-warning", Boolean(channel.error));
+    item.textContent = `${channel.source === "github" ? "GitHub" : "Gitee"} · ${channel.error ?? channel.version ?? "尚未检查"}`;
+    return item;
+  }));
+  channels.classList.toggle("is-hidden", !channels.childElementCount);
+  const busy = presentation.busy || appUpdateActionBusy || appUpdateChecking;
+  $("#app-update-panel")!.setAttribute("aria-busy", String(busy));
+  for (const control of document.querySelectorAll<HTMLInputElement | HTMLSelectElement | HTMLButtonElement>("#update-preferences-form input, #update-preferences-form select, #update-preferences-form button")) control.disabled = busy;
+
+  const checkButton = $("#app-update-check") as HTMLButtonElement;
+  checkButton.disabled = busy;
+  checkButton.textContent = appUpdateChecking ? "正在检查…" : "立即检查";
+  const openButton = $("#app-update-open") as HTMLButtonElement;
+  openButton.classList.toggle("is-hidden", !presentation.canOpen);
+  openButton.disabled = !presentation.canOpen || busy;
+  openButton.title = presentation.canOpen ? store.appUpdate?.releaseUrl ?? "" : "";
+  for (const [id, visible] of [["download", presentation.canDownload], ["install", presentation.canInstall], ["cancel", presentation.state === "downloading"]] as const) {
+    const button = $(`#app-update-${id}`) as HTMLButtonElement;
+    button.classList.toggle("is-hidden", !visible);
+    button.disabled = !visible || (id !== "cancel" && busy);
+  }
+  $("#app-update-progress")!.classList.toggle("is-hidden", !["downloading", "ready"].includes(presentation.state));
+  ($("#app-update-progress-bar") as HTMLProgressElement).value = presentation.progress;
+  $("#app-update-progress-text")!.textContent = `${(appUpdateStatus.downloadedBytes / 1048576).toFixed(1)} / ${(appUpdateStatus.totalBytes / 1048576).toFixed(1)} MiB · ${Math.floor(presentation.progress)}%`;
+
+  const notes = $("#app-update-notes") as HTMLDetailsElement;
+  const showNotes = Boolean(store.appUpdate?.available && store.appUpdate.notes);
+  notes.classList.toggle("is-hidden", !showNotes);
+  if (!showNotes) notes.open = false;
+  $("#app-update-notes-content")!.textContent = showNotes ? store.appUpdate!.notes : "";
+}
+
+function acceptAppUpdate(status: AppUpdateStatus) {
+  appUpdateStatus = status;
+  store.appUpdate = status.info;
+  appUpdateError = status.error;
+  renderAppUpdate();
+}
+
+async function checkForAppUpdate(silent: boolean) {
+  if (appUpdateChecking || appUpdateActionBusy || describeAppUpdate(appUpdateStatus).busy || appUpdateStatus.phase === "ready" && silent) return;
+  updateCheckAttemptedThisSession = true;
+  appUpdateChecking = true;
+  appUpdateError = null;
+  appUpdateStatus = { ...appUpdateStatus, phase: "checking", error: null };
+  renderAppUpdate();
+  try {
+    const result = await api.checkAppUpdate();
+    acceptAppUpdate(result);
+    if (result.info?.available) {
+      toast(`发现 RouteDeck 新版本 ${result.info.latestVersion}`, "info");
+    } else if (!silent) {
+      toast(describeAppUpdate(result).label, "info");
+    }
+  } catch (error) {
+    appUpdateError = errorMessage(error);
+    appUpdateStatus = { ...appUpdateStatus, phase: "failed", info: null, error: appUpdateError };
+    store.appUpdate = null;
+    if (!silent) toast(appUpdateError, "error");
+  } finally {
+    appUpdateChecking = false;
+    renderAppUpdate();
+  }
+  if (appUpdateStatus.phase === "available" && store.settings?.autoDownloadUpdates) await downloadAppUpdate();
+}
+
+async function downloadAppUpdate() {
+  if (appUpdateActionBusy || appUpdateChecking || !describeAppUpdate(appUpdateStatus).canDownload || !store.appUpdate) return;
+  const version = store.appUpdate.latestVersion;
+  const operationId = ++appUpdateOperationId;
+  appUpdateActionBusy = true;
+  appUpdateStatus = { ...appUpdateStatus, phase: "downloading", error: null, downloadedBytes: 0 };
+  renderAppUpdate();
+  const poll = window.setInterval(async () => {
+    if (appUpdatePollBusy) return;
+    appUpdatePollBusy = true;
+    try {
+      const status = await api.appUpdateStatus();
+      // A late polling reply must not overwrite a completed command response.
+      if (operationId === appUpdateOperationId && appUpdateActionBusy && appUpdateStatus.phase === "downloading" && status.phase === "downloading") acceptAppUpdate(status);
+    } catch { /* The command below reports the final native error. */ }
+    finally { appUpdatePollBusy = false; }
+  }, 400);
+  try {
+    acceptAppUpdate(await api.downloadAppUpdate(version));
+    toast("更新包已验证；可在方便时确认安装", "success");
+  } catch (error) {
+    try { acceptAppUpdate(await api.appUpdateStatus()); }
+    catch { acceptAppUpdate({ ...appUpdateStatus, phase: "failed", error: errorMessage(error) }); }
+    if (appUpdateStatus.phase !== "cancelled") toast(errorMessage(error), "error");
+  } finally {
+    window.clearInterval(poll);
+    appUpdateActionBusy = false;
+    renderAppUpdate();
+  }
+}
+
+function scheduleAutomaticUpdateCheck() {
+  if (
+    automaticUpdateCheckScheduled ||
+    !store.settings?.autoCheckUpdates
+  ) {
+    return;
+  }
+  automaticUpdateCheckScheduled = true;
+  window.setTimeout(() => {
+    if (updateCheckAttemptedThisSession || !store.settings?.autoCheckUpdates) return;
+    void checkForAppUpdate(true);
+  }, 18_000);
+  window.setInterval(() => {
+    if (store.settings?.autoCheckUpdates) void checkForAppUpdate(true);
+  }, 6 * 60 * 60 * 1_000);
 }
 
 function tunHelperStateLabel(state: TunHelperStatus["state"] | undefined): string {
@@ -1911,6 +2115,9 @@ async function runDiagnostics() {
     .join("");
 }
 
+const programManager = mountProgramManager($("#programs-view")!, { api, confirm: confirmAction, error: errorMessage });
+mountProxyCompatibility($("#proxy-compatibility-panel")!, api.systemProxyCompatibility, errorMessage);
+
 const ruleManager = mountRuleManager($("#rules-view")!, {
   api,
   confirm: confirmAction,
@@ -1931,12 +2138,8 @@ function navigate(view: ViewName) {
   $$(".nav-item").forEach((button) => {
     const active = button.dataset.view === view;
     button.classList.toggle("is-active", active);
-    button.setAttribute("aria-current", active ? "page" : "false");
-    button.style.color = active ? "var(--text)" : "var(--muted)";
-    button.style.borderColor = active ? "var(--line-strong)" : "transparent";
-    button.style.background = active ? "rgba(81, 45, 120, 0.54)" : "transparent";
-    const icon = button.querySelector<HTMLElement>("span");
-    if (icon) icon.style.color = active ? "#c19aff" : "var(--muted)";
+    if (active) button.setAttribute("aria-current", "page");
+    else button.removeAttribute("aria-current");
   });
   $$(".view-stack").forEach((element) =>
     element.classList.toggle("is-hidden", element.id !== `${view}-view`),
@@ -1946,6 +2149,7 @@ function navigate(view: ViewName) {
     if (store.runtime?.phase === "running") void refreshProxies();
   }
   if (view === "subscriptions") renderSubscriptions();
+  if (view === "programs") void programManager.refresh();
   if (view === "rules") {
     void ruleManager.refresh();
     if (store.runtime?.phase === "running") void refreshRules();
@@ -2222,6 +2426,63 @@ $("#tun-helper-uninstall")!.addEventListener("click", async (event) => {
   if (!confirmed) return;
   await action("TUN Helper 已卸载", () => api.uninstallTunHelper());
   await refreshBase();
+});
+
+$("#app-update-check")!.addEventListener("click", () => {
+  void checkForAppUpdate(false);
+});
+
+$("#app-update-open")!.addEventListener("click", async () => {
+  const update = store.appUpdate;
+  if (!update) return;
+  await action("已打开 RouteDeck 官方更新页面", () =>
+    api.openOfficialRelease(update.source, update.latestVersion),
+  );
+});
+
+$("#update-preferences-form")!.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  if (appUpdateActionBusy || appUpdateChecking) return;
+  appUpdateActionBusy = true;
+  renderAppUpdate();
+  try {
+    store.settings = await api.saveUpdatePreferences(
+      ($("#settings-update-source") as HTMLSelectElement).value as UpdateSource,
+      ($("#settings-auto-check-updates") as HTMLInputElement).checked,
+      ($("#settings-auto-download-updates") as HTMLInputElement).checked,
+    );
+    acceptAppUpdate(await api.appUpdateStatus());
+    renderSettings();
+    scheduleAutomaticUpdateCheck();
+    toast("更新偏好已保存；网络设置未改变", "success");
+  } catch (error) { toast(errorMessage(error), "error"); }
+  finally { appUpdateActionBusy = false; renderAppUpdate(); }
+});
+
+$("#app-update-download")!.addEventListener("click", () => { void downloadAppUpdate(); });
+$("#app-update-cancel")!.addEventListener("click", async () => {
+  await action("正在取消下载…", () => api.cancelAppUpdate());
+});
+$("#app-update-install")!.addEventListener("click", async (event) => {
+  if (appUpdateActionBusy || !describeAppUpdate(appUpdateStatus).canInstall || !store.appUpdate) return;
+  const version = store.appUpdate.latestVersion;
+  const confirmed = await confirmAction({
+    title: `安装 RouteDeck ${version}`,
+    message: "安装包已通过签名和 SHA-256 校验。继续后将暂时停止代理并重启 RouteDeck，正在进行的 Codex 对话、下载等连接可能中断。确认现在安装吗？",
+    confirmLabel: "确认安装并重启",
+    returnFocus: event.currentTarget as HTMLElement,
+  });
+  if (!confirmed) return;
+  appUpdateActionBusy = true;
+  appUpdateStatus = { ...appUpdateStatus, phase: "installing" };
+  renderAppUpdate();
+  try { await api.installAppUpdate(version, true); }
+  catch (error) {
+    try { acceptAppUpdate(await api.appUpdateStatus()); }
+    catch { acceptAppUpdate({ ...appUpdateStatus, phase: "failed", error: errorMessage(error) }); }
+    toast(errorMessage(error), "error");
+    await refreshBase();
+  } finally { appUpdateActionBusy = false; renderAppUpdate(); }
 });
 
 $("#settings-form")!.addEventListener("submit", async (event) => {

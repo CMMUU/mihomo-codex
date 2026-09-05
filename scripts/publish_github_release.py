@@ -17,6 +17,7 @@ from urllib.parse import quote, urlparse
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 from generate_compliance import INPUT_PATHS, markdown as compliance_markdown, property_value
+from updater_release import stage_updaters
 
 
 REPOSITORY = "CMMUU/routedeck"
@@ -55,8 +56,17 @@ def validate_version(root, tag):
     versions = [json.loads((root / path).read_text(encoding="utf-8"))["version"]
                 for path in ("package.json", "src-tauri/tauri.conf.json")]
     versions.append(tomllib.loads((root / "src-tauri/Cargo.toml").read_text(encoding="utf-8"))["package"]["version"])
+    npm_lock = json.loads((root / "package-lock.json").read_text(encoding="utf-8"))
+    versions.extend([npm_lock["version"], npm_lock["packages"][""]["version"]])
+    application = [item for item in tomllib.loads((root / "src-tauri/Cargo.lock").read_text(encoding="utf-8"))["package"] if item["name"] == "routedeck" and not item.get("source")]
+    if len(application) != 1:
+        raise ReleaseError("Cargo.lock must contain exactly one application package")
+    versions.append(application[0]["version"])
     if any(value != version for value in versions):
         raise ReleaseError("Release tag does not match all application versions")
+    config = json.loads((root / "src-tauri/tauri.conf.json").read_text(encoding="utf-8"))
+    if tuple(map(int, version.split("."))) >= (0, 7, 0) and config.get("bundle", {}).get("createUpdaterArtifacts") is not True:
+        raise ReleaseError("RouteDeck 0.7.0 and later require signed updater artifacts")
     notes = root / "docs" / f"发布说明-{tag}.md"
     if not notes.is_file() or not notes.read_text(encoding="utf-8").strip():
         raise ReleaseError(f"Reviewed release notes are required: docs/发布说明-{tag}.md")
@@ -187,6 +197,7 @@ def prepare_assets(root, artifacts, output, tag, fetch_source=download_source,
     shutil.copyfile(root / "LICENSE", output / "RouteDeck-LICENSE.txt")
     for path in packages:
         shutil.copyfile(path, output / path.name)
+    stage_updaters(root, artifacts, output, version, notes)
     shutil.copyfile(license_path, output / f"Mihomo-LICENSE-v{core}.txt")
     source_path = output / f"mihomo-v{core}-source.tar.gz"
     fetch_source(source_url, source_path)
@@ -329,11 +340,9 @@ def main():
                                      capture_output=True, text=True, check=False)
         if checked_out.returncode or checked_out.stdout.strip() != args.commit:
             raise ReleaseError("The checked-out source does not match the build commit")
-        clean_source = subprocess.run(
-            ["git", "-C", str(root), "diff", "--quiet", "HEAD", "--"], check=False,
-        )
-        if clean_source.returncode:
-            raise ReleaseError("Tracked source changes must not be included in a tagged release")
+        clean_source = subprocess.run(["git", "-C", str(root), "status", "--porcelain", "--untracked-files=all"], capture_output=True, text=True, check=False)
+        if clean_source.returncode or clean_source.stdout.strip():
+            raise ReleaseError("Uncommitted or untracked source changes must not be included in a tagged release")
     assets, notes = prepare_assets(root, args.artifacts, args.output, args.tag)
     if args.apply:
         publish(GitHub(), args.tag, args.commit, assets, notes)

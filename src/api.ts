@@ -3,6 +3,8 @@ import type { ThemePreference } from "./theme";
 import type {
   AppInfo,
   AppSettings,
+  AppUpdateStatus,
+  UpdateSource,
   BinaryInfo,
   ConfigRevision,
   CurrentNodeDetails,
@@ -15,6 +17,9 @@ import type {
   ProfileOperationResult,
   ProfileRecord,
   ProfileSummary,
+  ProgramInput,
+  ProgramState,
+  ProxyCompatibility,
   RoutingMode,
   RuntimeLog,
   RuntimeStatus,
@@ -28,6 +33,15 @@ import type {
 
 export const api = {
   appInfo: () => invoke<AppInfo>("app_info"),
+  checkAppUpdate: () => invoke<AppUpdateStatus>("check_app_update"),
+  appUpdateStatus: () => invoke<AppUpdateStatus>("app_update_status"),
+  downloadAppUpdate: (versionTag: string) => invoke<AppUpdateStatus>("download_app_update", { versionTag }),
+  cancelAppUpdate: () => invoke<void>("cancel_app_update"),
+  installAppUpdate: (versionTag: string, confirmed: boolean) => invoke<void>("install_app_update", { versionTag, confirmed }),
+  saveUpdatePreferences: (source: UpdateSource, autoCheck: boolean, autoDownload: boolean) =>
+    invoke<AppSettings>("save_update_preferences", { source, autoCheck, autoDownload }),
+  openOfficialRelease: (source: UpdateSource, versionTag: string) =>
+    invoke<void>("open_official_release", { source, versionTag }),
   settings: () => invoke<AppSettings>("get_settings"),
   updateSettings: (settings: AppSettings) =>
     invoke<AppSettings>("update_settings", { settings }),
@@ -74,6 +88,15 @@ export const api = {
   logs: (limit = 300) => invoke<RuntimeLog[]>("runtime_logs", { limit }),
   clearLogs: () => invoke<void>("clear_runtime_logs"),
   systemProxy: () => invoke<SystemProxyStatus>("system_proxy_status"),
+  systemProxyCompatibility: () => invoke<ProxyCompatibility>("check_system_proxy_compatibility"),
+  proxyPrograms: () => invoke<ProgramState>("list_proxy_programs"),
+  saveProxyProgram: (input: ProgramInput, expectedRevision: number) =>
+    invoke<ProgramState>("save_proxy_program", { input, expectedRevision }),
+  deleteProxyProgram: (programId: string, expectedRevision: number) =>
+    invoke<ProgramState>("delete_proxy_program", { programId, expectedRevision }),
+  launchProxyProgram: (programId: string, expectedRevision: number) =>
+    invoke<ProgramState>("launch_proxy_program", { programId, expectedRevision }),
+  chooseProxyProgram: () => invoke<string | null>("choose_proxy_program"),
   tunHelperStatus: () => invoke<TunHelperStatus>("tun_helper_status"),
   installTunHelper: () => invoke<TunHelperStatus>("install_tun_helper"),
   repairTunHelper: () => invoke<TunHelperStatus>("repair_tun_helper"),

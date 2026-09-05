@@ -106,6 +106,12 @@ pub struct AppSettings {
     pub controller_port: u16,
     pub controller_secret: String,
     pub update_channel: String,
+    #[serde(default = "default_true")]
+    pub auto_check_updates: bool,
+    #[serde(default)]
+    pub update_source: crate::app_update::UpdateSource,
+    #[serde(default)]
+    pub auto_download_updates: bool,
     pub diagnostics_retention_days: u16,
     /// Runtime overlay from the independent user-rules store; never serialized
     /// into settings.json or included in the public settings API.
@@ -131,6 +137,9 @@ impl Default for AppSettings {
             controller_port: 9090,
             controller_secret,
             update_channel: "stable".to_string(),
+            auto_check_updates: true,
+            update_source: crate::app_update::UpdateSource::Auto,
+            auto_download_updates: false,
             diagnostics_retention_days: 7,
             user_rules: Vec::new(),
         }
@@ -149,6 +158,12 @@ pub struct PublicAppSettings {
     pub mixed_port: u16,
     pub controller_port: u16,
     pub update_channel: String,
+    #[serde(default = "default_true")]
+    pub auto_check_updates: bool,
+    #[serde(default)]
+    pub update_source: crate::app_update::UpdateSource,
+    #[serde(default)]
+    pub auto_download_updates: bool,
     pub diagnostics_retention_days: u16,
 }
 
@@ -164,6 +179,9 @@ impl From<&AppSettings> for PublicAppSettings {
             mixed_port: value.mixed_port,
             controller_port: value.controller_port,
             update_channel: value.update_channel.clone(),
+            auto_check_updates: value.auto_check_updates,
+            update_source: value.update_source,
+            auto_download_updates: value.auto_download_updates,
             diagnostics_retention_days: value.diagnostics_retention_days,
         }
     }
@@ -182,6 +200,9 @@ impl PublicAppSettings {
             controller_port: self.controller_port,
             controller_secret: current.controller_secret.clone(),
             update_channel: self.update_channel,
+            auto_check_updates: self.auto_check_updates,
+            update_source: self.update_source,
+            auto_download_updates: self.auto_download_updates,
             diagnostics_retention_days: self.diagnostics_retention_days,
             user_rules: current.user_rules.clone(),
         }
@@ -354,6 +375,7 @@ mod tests {
     #[test]
     fn global_traffic_monitor_is_enabled_by_default() {
         assert!(AppSettings::default().show_global_traffic);
+        assert!(AppSettings::default().auto_check_updates);
     }
 
     #[test]
@@ -374,5 +396,26 @@ mod tests {
         )
         .expect("legacy settings");
         assert!(settings.show_global_traffic);
+        assert!(settings.auto_check_updates);
+    }
+
+    #[test]
+    fn older_public_settings_enable_update_checks_during_deserialization() {
+        let settings: super::PublicAppSettings = serde_json::from_str(
+            r#"{
+              "schemaVersion": 3,
+              "locale": "zh-CN",
+              "theme": "system",
+              "launchAtLogin": false,
+              "showGlobalTraffic": true,
+              "networkMode": "manual",
+              "mixedPort": 7895,
+              "controllerPort": 9090,
+              "updateChannel": "stable",
+              "diagnosticsRetentionDays": 7
+            }"#,
+        )
+        .expect("legacy public settings");
+        assert!(settings.auto_check_updates);
     }
 }

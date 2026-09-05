@@ -502,7 +502,9 @@ class Sync:
                                          {key: str(value).lower() if type(value) is bool else value for key, value in metadata.items() if key != "target_commitish"})
         if type(target.get("id")) is not int or target.get("tag_name") != tag:
             raise SyncError("Gitee release response does not match the source tag")
-        for item in files:
+        # Gitee has no draft assets. Make updater manifests visible only after
+        # every installer and signature has been uploaded and hash-verified.
+        for item in sorted(files, key=lambda item: (item["name"] in {"latest.json", "latest-gitee.json"}, item["name"])):
             self.ensure_attachment(target["id"], item)
         confirmed = self.ge.request(f"{self.target_path}/releases/{target['id']}")
         if not release_metadata_matches(confirmed, metadata, ("tag_name", "name", "body", "prerelease")):

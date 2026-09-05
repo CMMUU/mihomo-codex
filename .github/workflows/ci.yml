@@ -15,6 +15,9 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
       - name: Test publishing and Gitee synchronization
         run: python3 -m unittest discover -s scripts -p 'test_*.py'
 
@@ -54,10 +57,13 @@ jobs:
             libayatana-appindicator3-dev \
             librsvg2-dev
       - run: npm ci
+      - run: npm run version:check
       - run: npm run test:branding
       - run: npm run test:licenses
       - run: npm run test:theme
+      - run: npm run test:update
       - run: npm run test:rules
+      - run: npm run test:programs
       - run: npm run core:prepare
       - run: npm run test:core
       - run: npm run build

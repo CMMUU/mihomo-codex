@@ -73,6 +73,9 @@ export type AppSettings = {
   mixedPort: number;
   controllerPort: number;
   updateChannel: string;
+  autoCheckUpdates: boolean;
+  updateSource: UpdateSource;
+  autoDownloadUpdates: boolean;
   diagnosticsRetentionDays: number;
 };
 
@@ -244,6 +247,36 @@ export type SystemProxyStatus = {
   platform: string;
 };
 
+export type ProxyCompatibility = {
+  supported: boolean;
+  systemConfigured: boolean;
+  compatible: boolean;
+  expectedProxy: string;
+  resolvedHttp: string | null;
+  resolvedHttps: string | null;
+  detail: string;
+};
+
+export type ProgramProxyMode = "environment" | "chromium";
+export type ProxyProgram = {
+  id: string;
+  name: string;
+  executable: string;
+  arguments: string[];
+  workingDirectory: string | null;
+  mode: ProgramProxyMode;
+  available: boolean;
+  runningPid: number | null;
+};
+export type ProgramInput = Omit<ProxyProgram, "id" | "available" | "runningPid"> & { id: string | null };
+export type ProgramState = {
+  revision: number;
+  supported: boolean;
+  proxyEndpoint: string;
+  coreRunning: boolean;
+  programs: ProxyProgram[];
+};
+
 export type TunHelperState =
   | "unsupported"
   | "not_installed"
@@ -268,6 +301,27 @@ export type AppInfo = {
   version: string;
   targetOs: string;
   targetArch: string;
+};
+
+export type UpdateSource = "auto" | "github" | "gitee";
+export type AppUpdateInfo = {
+  currentVersion: string;
+  latestVersion: string;
+  available: boolean;
+  ahead: boolean;
+  notes: string;
+  publishedAt: string | null;
+  releaseUrl: string;
+  source: Exclude<UpdateSource, "auto">;
+  channels: Array<{ source: Exclude<UpdateSource, "auto">; version: string | null; error: string | null }>;
+};
+
+export type AppUpdateStatus = {
+  phase: "idle" | "checking" | "current" | "ahead" | "available" | "downloading" | "ready" | "installing" | "cancelled" | "failed";
+  info: AppUpdateInfo | null;
+  downloadedBytes: number;
+  totalBytes: number;
+  error: string | null;
 };
 
 export type AppError = {
