@@ -676,8 +676,13 @@ pub async fn install_app_update(
         })?;
         // Windows exits from install(); its installer relaunches RouteDeck.
         #[cfg(not(windows))]
-        app.restart();
-        Ok(())
+        {
+            app.restart()
+        }
+        #[cfg(windows)]
+        {
+            Ok(())
+        }
     })();
     result.map_err(|e| state.finish_error(&e))
 }

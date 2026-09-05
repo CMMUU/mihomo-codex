@@ -1,7 +1,7 @@
 {
   "name": "routedeck",
   "private": true,
-  "version": "0.7.0",
+  "version": "0.7.1",
   "license": "GPL-3.0-only",
   "type": "module",
   "scripts": {

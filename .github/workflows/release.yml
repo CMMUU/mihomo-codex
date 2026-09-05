@@ -66,6 +66,8 @@ jobs:
           node-version: 22
           cache: npm
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
       - name: Install Linux dependencies
         if: runner.os == 'Linux'
         run: |
@@ -95,6 +97,8 @@ jobs:
       - run: npm run test:rules
       - run: npm run test:programs
       - run: npm run core:prepare
+      - run: cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
+      - run: cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
       - run: cargo test --manifest-path src-tauri/Cargo.toml
       - name: Build signed installers and updater artifacts
         env:

@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.7.1 - Unreleased
+
+- Supersede the unpublished 0.7.0 build without rewriting its mirrored tag; include all dual-channel updater, compatibility, program-management and UI changes below.
+- Fix the macOS/Linux updater restart return path so strict cross-platform Clippy checks pass.
+- Require formatting and Clippy checks in the six-platform signed release workflow before publication.
+- Use HTTP/1.1 for Gitee Git transport, retry only transient read operations and verify every destination ref when a push response is uncertain; never force refs or blindly retry writes.
+
 ## 0.7.0 - Unreleased
 
 - Replace the release-page-only update action with signed in-app downloads, progress, cancellation, SHA-256 verification and explicit install/restart confirmation.
