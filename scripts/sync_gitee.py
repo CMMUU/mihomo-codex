@@ -543,20 +543,29 @@ class Sync:
             raise SyncError("Gitee release metadata did not match after synchronization")
         print(f"Synchronized {self.repo}: {tag}, {len(files)} attachment(s)", flush=True)
 
-    def run(self, scope, apply):
+    def run(self, scope, apply, release_tag=None):
+        if release_tag is not None and (scope != "all" or not re.fullmatch(r"v(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)", release_tag)):
+            raise SyncError("A focused release sync requires --scope all and an exact stable release tag")
         self.guard()
+        releases = self.gh.pages(self.source_path + "/releases") if scope == "all" else []
+        selected = releases
+        if release_tag is not None:
+            selected = [release for release in releases if release.get("tag_name") == release_tag and not release.get("draft")]
+            if len(selected) != 1:
+                raise SyncError("The requested release is not uniquely published on GitHub; no sync writes started")
         # Code updates remain useful even when the separate attachment quota
         # is exhausted. Privacy/ref checks still run before any Git push.
         bare = self.sync_refs() if apply else None
         if apply:
             print(f"Synchronized and verified {self.repo} branches and tags", flush=True)
-        releases = self.gh.pages(self.source_path + "/releases") if scope == "all" else []
         if scope == "all":
+            # Focus only limits transfers. Capacity/conflict checks still cover
+            # every source and destination release, including historical assets.
             self.plan_release_capacity(releases)
         if not apply:
             print(f"Preflight passed for {self.repo}; {len(releases)} release(s) found. No external changes without --apply.")
             return
-        for release in reversed(releases):
+        for release in reversed(selected):
             self.sync_release(release, bare)
 
 
@@ -564,6 +573,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--repo", choices=sorted(REPOS), required=True)
     parser.add_argument("--scope", choices=("refs", "all"), default="all")
+    parser.add_argument("--release-tag", help="Transfer one published stable release; still check total attachment capacity")
     parser.add_argument("--work-dir", type=Path, required=True)
     parser.add_argument("--apply", action="store_true", help="Explicitly authorize writes to the checked Gitee repository")
     args = parser.parse_args()
@@ -577,7 +587,7 @@ def main():
     max_total = configured_bytes("GITEE_MAX_TOTAL_BYTES", GE_MAX_TOTAL, 100_000_000_000)
     reserved = configured_bytes("GITEE_OTHER_ATTACHMENT_BYTES", 0, max_total)
     Sync(args.repo, Api("github", gh_token), Api("gitee", ge_token, extra_hosts), args.work_dir,
-         max_asset, max_total, reserved).run(args.scope, args.apply)
+         max_asset, max_total, reserved).run(args.scope, args.apply, args.release_tag)
 
 
 if __name__ == "__main__":

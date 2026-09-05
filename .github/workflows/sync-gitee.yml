@@ -46,6 +46,29 @@ jobs:
           GITEE_MAX_ASSET_BYTES: ${{ vars.GITEE_MAX_ASSET_BYTES }}
           GITEE_MAX_TOTAL_BYTES: ${{ vars.GITEE_MAX_TOTAL_BYTES }}
           GITEE_OTHER_ATTACHMENT_BYTES: ${{ vars.GITEE_OTHER_ATTACHMENT_BYTES }}
-        run: >-
-          python3 scripts/sync_gitee.py --repo routedeck
-          --scope all --work-dir "$RUNNER_TEMP/gitee-sync" --apply
+          SYNC_EVENT: ${{ github.event_name }}
+          SYNC_RELEASE_TAG: ${{ github.event.release.tag_name }}
+          SYNC_BUILD_REF: ${{ github.event.workflow_run.head_branch }}
+        shell: bash
+        run: |
+          args=(--repo routedeck --work-dir "$RUNNER_TEMP/gitee-sync" --apply)
+          case "$SYNC_EVENT" in
+            push)
+              args+=(--scope refs)
+              ;;
+            release)
+              args+=(--scope all --release-tag "$SYNC_RELEASE_TAG")
+              ;;
+            workflow_run)
+              if [[ "$SYNC_BUILD_REF" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+                args+=(--scope all --release-tag "$SYNC_BUILD_REF")
+              else
+                args+=(--scope refs)
+              fi
+              ;;
+            *)
+              # Scheduled and explicitly dispatched runs retain the full audit.
+              args+=(--scope all)
+              ;;
+          esac
+          python3 scripts/sync_gitee.py "${args[@]}"

@@ -104,6 +104,33 @@ class SyncTests(unittest.TestCase):
                             job.sync_refs()
                     self.assertEqual(sum("push" in call.args for call in run.call_args_list), 1)
 
+    def test_focused_release_sync_keeps_full_capacity_checks(self):
+        releases = [{"tag_name": "v0.7.1", "draft": False}, {"tag_name": "v0.5.0", "draft": False}]
+        job = sync.Sync("routedeck", SimpleNamespace(pages=lambda path: releases), None, self.fixture())
+        with patch.object(job, "guard"), patch.object(job, "sync_refs", return_value="mirror") as refs, patch.object(job, "plan_release_capacity") as capacity, patch.object(job, "sync_release") as transfer:
+            job.run("all", True, "v0.7.1")
+            refs.assert_called_once()
+            capacity.assert_called_once_with(releases)
+            transfer.assert_called_once_with(releases[0], "mirror")
+
+    def test_unknown_draft_or_ambiguous_focused_release_stops_before_writes(self):
+        for releases in ([], [{"tag_name": "v0.7.1", "draft": True}], [{"tag_name": "v0.7.1", "draft": False}] * 2):
+            with self.subTest(releases=releases):
+                job = sync.Sync("routedeck", SimpleNamespace(pages=lambda path: releases), None, self.fixture())
+                with patch.object(job, "guard"), patch.object(job, "sync_refs") as refs, patch.object(job, "sync_release") as transfer:
+                    with self.assertRaisesRegex(sync.SyncError, "not uniquely published"):
+                        job.run("all", True, "v0.7.1")
+                    refs.assert_not_called()
+                    transfer.assert_not_called()
+
+    def test_focused_sync_rejects_invalid_tags_and_refs_only_scope(self):
+        job = sync.Sync("routedeck", None, None, self.fixture())
+        for scope, tag in (("refs", "v0.7.1"), ("all", "main"), ("all", "v0.7.1-beta"), ("all", "v0.7.1/other"), ("all", "v00.7.1")):
+            with self.subTest(scope=scope, tag=tag), patch.object(job, "guard") as guard:
+                with self.assertRaisesRegex(sync.SyncError, "exact stable release tag"):
+                    job.run(scope, True, tag)
+                guard.assert_not_called()
+
     def test_git_credentials_only_allow_the_renamed_repository_paths(self):
         environment = {"SYNC_REPO": "routedeck", "GITHUB_TOKEN": "offline-gh", "GITEE_TOKEN": "offline-ge"}
         for host, owner, username, token in (("github.com", "CMMUU", "x-access-token", "offline-gh"),
