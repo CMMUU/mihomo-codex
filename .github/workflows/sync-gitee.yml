@@ -10,6 +10,11 @@ on:
   release:
     types: [published, edited]
   workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Optional published stable tag to transfer; empty performs a full historical audit
+        required: false
+        type: string
   schedule:
     - cron: '17 2 * * *'
 
@@ -49,6 +54,7 @@ jobs:
           SYNC_EVENT: ${{ github.event_name }}
           SYNC_RELEASE_TAG: ${{ github.event.release.tag_name }}
           SYNC_BUILD_REF: ${{ github.event.workflow_run.head_branch }}
+          SYNC_REQUESTED_TAG: ${{ inputs.release_tag }}
         shell: bash
         run: |
           args=(--repo routedeck --work-dir "$RUNNER_TEMP/gitee-sync" --apply)
@@ -63,7 +69,15 @@ jobs:
               if [[ "$SYNC_BUILD_REF" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
                 args+=(--scope all --release-tag "$SYNC_BUILD_REF")
               else
-                args+=(--scope refs)
+                # A manually repaired release may run from main while checking
+                # out an immutable tag. Preserve automatic attachment sync.
+                args+=(--scope all)
+              fi
+              ;;
+            workflow_dispatch)
+              args+=(--scope all)
+              if [ -n "$SYNC_REQUESTED_TAG" ]; then
+                args+=(--release-tag "$SYNC_REQUESTED_TAG")
               fi
               ;;
             *)

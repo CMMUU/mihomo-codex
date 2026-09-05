@@ -2,16 +2,50 @@ name: Release bundles
 
 on:
   workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Existing stable tag to publish or repair; empty builds the selected ref without publishing
+        required: false
+        type: string
   push:
     tags:
       - "v*"
 
 concurrency:
-  group: release-bundles-${{ github.ref }}
+  group: release-bundles-${{ inputs.release_tag || github.ref_name }}
   cancel-in-progress: false
 
 jobs:
+  source:
+    permissions:
+      contents: read
+    runs-on: ubuntu-24.04
+    outputs:
+      commit: ${{ steps.resolve.outputs.commit }}
+      tag: ${{ steps.resolve.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.release_tag || github.ref }}
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Resolve one immutable source commit for every platform
+        id: resolve
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag || (startsWith(github.ref, 'refs/tags/') && github.ref_name) || '' }}
+        shell: bash
+        run: |
+          node scripts/version.mjs
+          if [ -n "$RELEASE_TAG" ]; then
+            node scripts/version.mjs --tag "$RELEASE_TAG"
+          fi
+          echo "commit=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          echo "tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
+
   bundle:
+    needs: source
     permissions:
       contents: read
     strategy:
@@ -61,6 +95,8 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.source.outputs.commit }}
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -81,13 +117,14 @@ jobs:
             libxdo-dev \
             libssl-dev \
             libayatana-appindicator3-dev \
-            librsvg2-dev
+            librsvg2-dev \
+            xdg-utils
       - run: npm ci
       - run: npm run version:check
       - name: Require matching release tag
-        if: startsWith(github.ref, 'refs/tags/')
+        if: needs.source.outputs.tag != ''
         env:
-          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_TAG: ${{ needs.source.outputs.tag }}
         run: node scripts/version.mjs --tag "$RELEASE_TAG"
         shell: bash
       - run: npm run test:branding
@@ -118,8 +155,8 @@ jobs:
           if-no-files-found: error
 
   publish:
-    needs: bundle
-    if: github.repository == 'CMMUU/routedeck' && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    needs: [source, bundle]
+    if: github.repository == 'CMMUU/routedeck' && needs.source.outputs.tag != '' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     permissions:
@@ -127,6 +164,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: ${{ needs.source.outputs.commit }}
           persist-credentials: false
       - uses: actions/setup-python@v5
         with:
@@ -143,8 +181,8 @@ jobs:
       - name: Generate and verify compliance assets, then publish GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ github.ref_name }}
-          RELEASE_COMMIT: ${{ github.sha }}
+          RELEASE_TAG: ${{ needs.source.outputs.tag }}
+          RELEASE_COMMIT: ${{ needs.source.outputs.commit }}
         run: >-
           python3 scripts/publish_github_release.py
           --tag "$RELEASE_TAG" --commit "$RELEASE_COMMIT"
