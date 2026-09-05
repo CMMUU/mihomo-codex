@@ -130,6 +130,7 @@ jobs:
       - run: npm run test:branding
       - run: npm run test:licenses
       - run: npm run test:theme
+      - run: npm run test:ui
       - run: npm run test:update
       - run: npm run test:rules
       - run: npm run test:programs

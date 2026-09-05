@@ -1,6 +1,13 @@
 # Changelog
 
-## 0.7.1 - Unreleased
+## 0.7.2 - 2026-09-05
+
+- Apply the approved Apple-inspired desktop design with a unified sidebar, settings groups, iconography, rounded interaction states and capsule scrollbars across light, dark, purple and compact layouts.
+- Prefer Gitee for the newest available stable build in automatic update mode, retaining GitHub as fallback only for byte-identical signed packages. A lagging or unavailable mirror does not hide a newer GitHub release.
+- Explain domestic-first updates in Settings while preserving explicitly selected single-source preferences, independent preference saving and installation confirmation.
+- Add navigation, theme/accessibility, preference wiring and update-source ordering regression tests to local checks and both CI workflows.
+
+## 0.7.1 - 2026-09-05
 
 - Supersede the unpublished 0.7.0 build without rewriting its mirrored tag; include all dual-channel updater, compatibility, program-management and UI changes below.
 - Fix the macOS/Linux updater restart return path so strict cross-platform Clippy checks pass.

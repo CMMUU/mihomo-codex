@@ -31,6 +31,13 @@ test("download progress is bounded and never NaN", () => {
   assert.equal(describeAppUpdate({ ...status("downloading"), downloadedBytes: 500 }).progress, 100);
   assert.equal(describeAppUpdate({ ...status("downloading"), totalBytes: 0 }).progress, 0);
 });
+test("automatic update preferences clearly describe the domestic-first fallback policy", () => {
+  const settings = readFileSync(new URL("../src/settings-view.ts", import.meta.url), "utf8");
+  assert.match(settings, /value="auto">自动（国内优先）/);
+  assert.match(settings, /自动：Gitee → GitHub/);
+  assert.match(settings, /Gitee 尚未同步新版时使用 GitHub/);
+  assert.match(describeAppUpdate(status("idle")).detail, /优先 Gitee，GitHub 备用/);
+});
 test("updater uses confirmed native installation and separately saved non-network preferences", () => {
   const api = readFileSync(new URL("../src/api.ts", import.meta.url), "utf8");
   const main = readFileSync(new URL("../src/main.ts", import.meta.url), "utf8");

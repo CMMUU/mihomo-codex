@@ -1,6 +1,6 @@
 [package]
 name = "routedeck"
-version = "0.7.1"
+version = "0.7.2"
 license = "GPL-3.0-only"
 description = "RouteDeck: lightweight cross-platform Mihomo desktop client"
 authors = ["cmmuu"]

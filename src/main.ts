@@ -1,4 +1,7 @@
 import "./styles.css";
+import "./desktop-theme.css";
+import { NAV_ITEMS, navigationMarkup, type ViewName } from "./ui";
+import { preferencesMarkup } from "./settings-view";
 import { api, errorMessage, revisionLabel } from "./api";
 import { describeAppUpdate } from "./app-update";
 import { listen } from "@tauri-apps/api/event";
@@ -57,18 +60,6 @@ dns:
     - 1.1.1.1
     - 8.8.8.8
 `;
-
-type ViewName =
-  | "overview"
-  | "profiles"
-  | "subscriptions"
-  | "proxies"
-  | "programs"
-  | "rules"
-  | "connections"
-  | "logs"
-  | "diagnostics"
-  | "settings";
 
 const store: {
   view: ViewName;
@@ -141,18 +132,7 @@ app.innerHTML = `
         <div class="brand-mark"><img src="${appIconUrl}" alt="" width="40" height="40" /></div>
         <div><strong>RouteDeck</strong><span>轻量稳定代理客户端</span></div>
       </div>
-      <nav class="nav-list" aria-label="主导航">
-        <button class="nav-item is-active" data-view="overview" aria-current="page"><span>●</span>概览</button>
-        <button class="nav-item" data-view="profiles"><span>▣</span>配置</button>
-        <button class="nav-item" data-view="subscriptions"><span>↻</span>订阅</button>
-        <button class="nav-item" data-view="proxies"><span>◇</span>代理</button>
-        <button class="nav-item" data-view="programs"><span>▤</span>程序代理</button>
-        <button class="nav-item" data-view="rules"><span>≡</span>规则</button>
-        <button class="nav-item" data-view="connections"><span>⇄</span>连接</button>
-        <button class="nav-item" data-view="logs"><span>⌁</span>日志</button>
-        <button class="nav-item" data-view="diagnostics"><span>✓</span>诊断</button>
-        <button class="nav-item" data-view="settings"><span>⚙</span>设置</button>
-      </nav>
+      <nav class="nav-list" aria-label="主导航">${navigationMarkup}</nav>
       <div class="sidebar-footer">
         <div class="sidebar-runtime-status">
           <span class="status-dot" id="sidebar-status-dot"></span>
@@ -163,25 +143,19 @@ app.innerHTML = `
           <span class="traffic-download"><b>↓</b><strong id="global-download-rate">0 B/s</strong></span>
         </div>
       </div>
+      <span class="sidebar-version" id="sidebar-version"></span>
     </aside>
     <main class="main-content">
       <header class="topbar" aria-label="应用状态与全局控制">
-        <div class="application-status-summary">
-          <div class="application-status-heading">
-            <span class="application-status-dot" id="application-status-dot"></span>
-            <div><p class="eyebrow">RouteDeck</p><h1 id="page-title">应用状态</h1></div>
-          </div>
-          <div class="application-status-meta" aria-live="polite">
-            <strong id="application-runtime-state">正在读取</strong>
-            <span id="application-profile-state">未选择订阅</span>
-            <span id="application-mode-state">Manual</span>
-          </div>
-        </div>
+        <div class="page-heading"><h1 id="page-title">概览</h1><div class="application-status-meta"><span id="application-profile-state">未选择订阅</span><span id="application-mode-state">Manual</span></div></div>
         <div class="topbar-actions">
-          <span class="platform-chip" id="platform-chip">检测平台中</span>
-          <button class="button status-mode-button" id="global-system-proxy" type="button" aria-pressed="false"><span>S</span>系统代理</button>
-          <button class="button status-mode-button" id="global-tun" type="button" aria-pressed="false"><span>T</span>TUN 模式</button>
-          <button class="button button-quiet" id="global-refresh">刷新</button>
+          <div class="global-secondary-actions">
+            <span class="platform-chip" id="platform-chip">检测平台中</span>
+            <button class="button status-mode-button" id="global-system-proxy" type="button" aria-pressed="false">系统代理</button>
+            <button class="button status-mode-button" id="global-tun" type="button" aria-pressed="false">TUN 模式</button>
+            <button class="button button-quiet" id="global-refresh">刷新</button>
+          </div>
+          <div class="header-runtime" aria-live="polite"><span class="application-status-dot" id="application-status-dot"></span><strong id="application-runtime-state">正在读取</strong></div>
           <button class="button button-primary" id="global-start">启动</button>
           <button class="button button-danger" id="global-stop" disabled>停止</button>
         </div>
@@ -397,81 +371,8 @@ app.innerHTML = `
       </section>
 
       <section class="view-stack is-hidden" id="settings-view">
-        <article class="panel appearance-panel">
-          <div class="panel-heading"><div><div class="section-label">APPEARANCE</div><h2>外观主题</h2></div></div>
-          <fieldset class="appearance-settings">
-            <legend>选择外观，立即生效并自动保存</legend>
-            <div class="appearance-grid" role="radiogroup" aria-label="应用主题" aria-describedby="appearance-status">
-              ${THEME_OPTIONS.map((option) => `
-                <button type="button" class="theme-option" data-theme-choice="${option.id}" role="radio" aria-checked="false" tabindex="-1">
-                  <span class="theme-swatch" data-swatch="${option.id}" aria-hidden="true"><i></i><i></i><i></i></span>
-                  <span class="theme-copy"><strong>${option.label}</strong><small>${option.description}</small></span>
-                  <span class="theme-checkmark" aria-hidden="true">✓</span>
-                </button>
-              `).join("")}
-            </div>
-            <p class="appearance-status" id="appearance-status" role="status" aria-live="polite"></p>
-          </fieldset>
-        </article>
-        <article class="panel">
-          <div class="panel-heading"><div><div class="section-label">SETTINGS</div><h2>运行设置</h2></div></div>
-          <form id="settings-form" class="settings-grid">
-            <label><span>网络模式</span><select id="settings-mode"><option value="manual">Manual 本地端口</option><option value="system_proxy">System Proxy 系统代理</option><option value="tun">TUN 全局接管</option></select></label>
-            <label><span>Mixed Port</span><input id="settings-mixed-port" type="number" min="1024" max="65535" /></label>
-            <label><span>Controller Port</span><input id="settings-controller-port" type="number" min="1024" max="65535" /></label>
-            <label class="checkbox-row"><input id="settings-launch" type="checkbox" /><span>登录时启动</span></label>
-            <label class="checkbox-row"><input id="settings-global-traffic" type="checkbox" /><span>显示全局流量监控</span></label>
-            <label><span>日志保留天数</span><input id="settings-retention" type="number" min="1" max="90" /></label>
-            <div class="span-2"><button class="button button-primary" type="submit">保存设置</button></div>
-          </form>
-          <div class="settings-note" id="network-mode-help">切换网络模式和端口前需要先停止 Mihomo。开启 TUN 前会检查权限和配置。</div>
-        </article>
+        ${preferencesMarkup}
         ${proxyCompatibilityMarkup}
-        <article class="panel app-update-panel" id="app-update-panel" aria-busy="false">
-          <div class="panel-heading">
-            <div><div class="section-label">APPLICATION UPDATE</div><h2>应用更新</h2></div>
-            <span class="control-state-pill" id="app-update-state">待检查</span>
-          </div>
-          <div class="app-update-summary">
-            <div class="app-update-mark" aria-hidden="true">↑</div>
-            <div aria-live="polite"><strong id="app-update-title">尚未检查</strong><p id="app-update-message">从 GitHub / Gitee 获取官方稳定版；安装前由你确认。</p></div>
-          </div>
-          <div class="about-grid app-update-details">
-            <span>当前版本</span><strong id="app-update-current">—</strong>
-            <span>最新稳定版</span><strong id="app-update-latest">尚未检查</strong>
-            <span>发布日期</span><strong id="app-update-date">—</strong>
-            <span>当前渠道</span><strong id="app-update-source">—</strong>
-          </div>
-          <ul class="app-update-channels is-hidden" id="app-update-channels" aria-label="渠道检查结果"></ul>
-          <form id="update-preferences-form" class="app-update-preferences">
-            <label><span>更新来源</span><select id="settings-update-source"><option value="auto">自动 · 双渠道比较与容灾</option><option value="github">GitHub</option><option value="gitee">Gitee</option></select></label>
-            <label class="checkbox-row app-update-auto-check">
-              <input id="settings-auto-check-updates" name="autoCheckUpdates" type="checkbox" />
-              <span><strong>自动检查更新</strong><small>启动后延迟检查，运行期间每 6 小时检查一次。</small></span>
-            </label>
-            <label class="checkbox-row app-update-auto-check">
-              <input id="settings-auto-download-updates" type="checkbox" />
-              <span><strong>自动下载更新包</strong><small>默认关闭；开启后占用少量下载带宽，仍需确认安装。</small></span>
-            </label>
-            <button class="button button-quiet" id="app-update-save" type="submit">保存更新偏好</button>
-          </form>
-          <div class="app-update-progress is-hidden" id="app-update-progress"><progress id="app-update-progress-bar" max="100" value="0" aria-label="更新包下载进度"></progress><span id="app-update-progress-text" aria-live="off"></span></div>
-          <div class="app-update-controls">
-            <span class="hint">官方签名校验 · SHA-256 校验 · 禁止降级</span>
-            <div class="toolbar">
-              <button class="button button-quiet" id="app-update-check" type="button">立即检查</button>
-              <button class="button button-quiet is-hidden" id="app-update-open" type="button">发布页面</button>
-              <button class="button button-primary is-hidden" id="app-update-download" type="button">下载更新</button>
-              <button class="button button-quiet is-hidden" id="app-update-cancel" type="button">取消下载</button>
-              <button class="button button-primary is-hidden" id="app-update-install" type="button">安装并重启</button>
-            </div>
-          </div>
-          <details class="app-update-notes is-hidden" id="app-update-notes">
-            <summary>查看发布说明</summary>
-            <p id="app-update-notes-content"></p>
-          </details>
-          <p class="hint">自动模式选用可用渠道中的最高稳定版；仅同版本、同摘要、同签名的包可跨渠道回退。退出软件会清除尚未安装的下载缓存。Linux 内置更新适用于 AppImage。</p>
-        </article>
         <article class="panel tun-helper-panel">
           <div class="panel-heading">
             <div><div class="section-label">PRIVILEGED TUN</div><h2 id="tun-panel-heading">TUN 权限</h2></div>
@@ -783,6 +684,9 @@ function renderHeader() {
   $("#application-mode-state")!.textContent = modeLabel(mode);
   $("#application-status-dot")!.classList.toggle("is-running", running);
   $("#application-status-dot")!.classList.toggle("is-busy", controlsBusy);
+  $("#sidebar-version")!.textContent = store.appInfo ? `v${store.appInfo.version}` : "";
+  $("#page-title")!.textContent = NAV_ITEMS.find((item) => item.id === store.view)!.label;
+  document.documentElement.dataset.runtimeRunning = String(running);
   $("#sidebar-status")!.textContent = running ? "Mihomo 运行中" : "Mihomo 已停止";
   $("#sidebar-status-dot")!.classList.toggle("is-running", running);
   renderGlobalTraffic();
@@ -1025,6 +929,7 @@ function renderSettings() {
   if (!store.settings) return;
   themeController.sync(store.settings.theme);
   ($("#settings-mode") as HTMLSelectElement).value = store.settings.networkMode;
+  document.querySelectorAll<HTMLInputElement>('[name="settings-network-mode"]').forEach((radio) => { radio.checked = radio.value === store.settings!.networkMode; });
   ($("#settings-mixed-port") as HTMLInputElement).value = String(store.settings.mixedPort);
   ($("#settings-controller-port") as HTMLInputElement).value = String(store.settings.controllerPort);
   ($("#settings-launch") as HTMLInputElement).checked = store.settings.launchAtLogin;
@@ -1046,6 +951,8 @@ function renderAppUpdate() {
   const presentation = describeAppUpdate(appUpdateStatus);
   const state = $("#app-update-state")!;
   state.textContent = presentation.badge;
+  state.classList.toggle("is-hidden", appUpdateStatus.phase === "idle");
+  $("#app-update-feedback")!.classList.toggle("is-hidden", appUpdateStatus.phase === "idle");
   state.classList.toggle("is-running", ["current", "ready"].includes(presentation.state));
   state.classList.toggle("is-warning", presentation.state === "available");
   state.classList.toggle("is-error", presentation.state === "failed");
@@ -1070,7 +977,7 @@ function renderAppUpdate() {
 
   const checkButton = $("#app-update-check") as HTMLButtonElement;
   checkButton.disabled = busy;
-  checkButton.textContent = appUpdateChecking ? "正在检查…" : "立即检查";
+  checkButton.textContent = appUpdateChecking ? "正在检查…" : "检查更新";
   const openButton = $("#app-update-open") as HTMLButtonElement;
   openButton.classList.toggle("is-hidden", !presentation.canOpen);
   openButton.disabled = !presentation.canOpen || busy;
@@ -1252,7 +1159,7 @@ function renderAppearance(snapshot: ThemeSnapshot) {
   root.dataset.themePreference = snapshot.selected;
   root.style.colorScheme = themeColorScheme(snapshot.resolved);
   const meta = document.querySelector<HTMLMetaElement>('meta[name="theme-color"]');
-  if (meta) meta.content = { light: "#f5f6f8", dark: "#15171c", purple: "#160c25" }[snapshot.resolved];
+  if (meta) meta.content = { light: "#f5f5f7", dark: "#1e1f22", purple: "#191222" }[snapshot.resolved];
   const busy = snapshot.saving || settingsSaving;
   document.querySelectorAll<HTMLButtonElement>("[data-theme-choice]").forEach((button) => {
     const selected = button.dataset.themeChoice === snapshot.selected;
@@ -2135,6 +2042,7 @@ function navigate(view: ViewName) {
   }
   store.view = view;
   document.documentElement.dataset.view = view;
+  $("#page-title")!.textContent = NAV_ITEMS.find((item) => item.id === view)!.label;
   $$(".nav-item").forEach((button) => {
     const active = button.dataset.view === view;
     button.classList.toggle("is-active", active);
@@ -2485,6 +2393,11 @@ $("#app-update-install")!.addEventListener("click", async (event) => {
   } finally { appUpdateActionBusy = false; renderAppUpdate(); }
 });
 
+document.querySelectorAll<HTMLInputElement>('[name="settings-network-mode"]').forEach((radio) => {
+  radio.addEventListener("change", () => {
+    if (radio.checked) ($("#settings-mode") as HTMLSelectElement).value = radio.value;
+  });
+});
 $("#settings-form")!.addEventListener("submit", async (event) => {
   event.preventDefault();
   if (!store.settings || settingsSaving || themeController.snapshot.saving) return;

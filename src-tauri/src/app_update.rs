@@ -388,6 +388,20 @@ fn same_build(a: &Candidate, b: &Candidate) -> bool {
         && a.update.signature == b.update.signature
 }
 
+fn candidate_priority(
+    version: StableVersion,
+    source: UpdateSource,
+) -> (std::cmp::Reverse<StableVersion>, u8) {
+    // Prefer the domestic mirror for the newest stable build. A lagging mirror
+    // must not hide a newer GitHub release or become a downgrade fallback.
+    let priority = match source {
+        UpdateSource::Gitee => 0,
+        UpdateSource::Github => 1,
+        UpdateSource::Auto => 2,
+    };
+    (std::cmp::Reverse(version), priority)
+}
+
 #[tauri::command]
 pub fn save_update_preferences(
     app: AppHandle,
@@ -437,11 +451,11 @@ pub async fn check_app_update(
         let proxy = proxy_for_update(&app)?;
         let results = match source {
             UpdateSource::Auto => {
-                let (github, gitee) = tokio::join!(
-                    check_source(&app, UpdateSource::Github, proxy.as_ref()),
-                    check_source(&app, UpdateSource::Gitee, proxy.as_ref())
+                let (gitee, github) = tokio::join!(
+                    check_source(&app, UpdateSource::Gitee, proxy.as_ref()),
+                    check_source(&app, UpdateSource::Github, proxy.as_ref())
                 );
-                vec![(UpdateSource::Github, github), (UpdateSource::Gitee, gitee)]
+                vec![(UpdateSource::Gitee, gitee), (UpdateSource::Github, github)]
             }
             single => vec![(single, check_source(&app, single, proxy.as_ref()).await)],
         };
@@ -464,7 +478,7 @@ pub async fn check_app_update(
                 }),
             }
         }
-        candidates.sort_by_key(|candidate| std::cmp::Reverse(candidate.version));
+        candidates.sort_by_key(|candidate| candidate_priority(candidate.version, candidate.source));
         let latest = candidates.first().ok_or_else(|| {
             failure(
                 channels
@@ -702,6 +716,34 @@ pub fn open_official_release(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn newest_build_prefers_gitee_and_keeps_github_as_download_fallback() {
+        let version = StableVersion(1, 2, 3);
+        let mut sources = [UpdateSource::Github, UpdateSource::Gitee];
+        sources.sort_by_key(|source| candidate_priority(version, *source));
+        assert_eq!(sources, [UpdateSource::Gitee, UpdateSource::Github]);
+        sources.reverse();
+        sources.sort_by_key(|source| candidate_priority(version, *source));
+        assert_eq!(sources, [UpdateSource::Gitee, UpdateSource::Github]);
+    }
+    #[test]
+    fn lagging_domestic_mirror_never_hides_a_newer_official_release() {
+        let mut releases = [
+            (StableVersion(1, 2, 3), UpdateSource::Gitee),
+            (StableVersion(1, 2, 4), UpdateSource::Github),
+        ];
+        releases.sort_by_key(|(version, source)| candidate_priority(*version, *source));
+        assert_eq!(releases[0], (StableVersion(1, 2, 4), UpdateSource::Github));
+    }
+    #[test]
+    fn automatic_updates_remain_the_default_and_either_single_source_is_usable() {
+        assert_eq!(UpdateSource::default(), UpdateSource::Auto);
+        for source in [UpdateSource::Gitee, UpdateSource::Github] {
+            let mut sources = [source];
+            sources.sort_by_key(|source| candidate_priority(StableVersion(1, 2, 3), *source));
+            assert_eq!(sources, [source]);
+        }
+    }
     #[test]
     fn versions_are_strict_numeric_and_never_allow_prereleases_or_paths() {
         assert!(parse_version("0.10.0").unwrap() > parse_version("0.9.9").unwrap());

@@ -42,6 +42,7 @@
       #fixture-banner [data-failed="true"] { color: #a21c30; font-weight: 700; }
       html body #app { min-height: 0; height: calc(100vh - var(--fixture-banner-height, 74px)); }
       html body #app .app-shell { height: 100%; }
+      html[data-fixture-presentation="true"] #fixture-banner { display: none; }
     </style>
   </head>
   <body>

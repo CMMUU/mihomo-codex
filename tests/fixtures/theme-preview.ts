@@ -17,6 +17,10 @@ const STORAGE_KEY = "routedeck:test-fixture:theme-preview:v1";
 const RULES_STORAGE_KEY = "routedeck:test-fixture:user-rules:v1";
 const PROGRAMS_STORAGE_KEY = "routedeck:test-fixture:proxy-programs:v1";
 const previewWindows = new URLSearchParams(location.search).get("platform") === "windows";
+// Screenshot-only layout; synthetic version labels and the fail-closed bridge remain.
+if (new URLSearchParams(location.search).get("presentation") === "1") {
+  document.documentElement.dataset.fixturePresentation = "true";
+}
 const THEMES: readonly ThemePreference[] = ["system", "light", "dark", "purple"];
 type FixtureState = { theme: ThemePreference; systemDark: boolean };
 
@@ -56,6 +60,8 @@ let fixtureUpdate: AppUpdateStatus = { phase: "idle", info: null, downloadedByte
 let updateScenario = "available";
 let cancelUpdateDownload = false;
 let updateInstallCount = 0;
+let appearanceSettings = { launchAtLogin: false, showGlobalTraffic: true, diagnosticsRetentionDays: 7 };
+let settingsSaveCount = 0;
 window.addEventListener("routedeck-fixture-update", (event) => { updateScenario = (event as CustomEvent).detail.scenario; });
 window.addEventListener("routedeck-fixture-programs", (event) => {
   const detail = (event as CustomEvent).detail;
@@ -194,7 +200,7 @@ function userRulesState(): UserRulesState {
   });
 }
 
-function ruleError(code: "INVALID_INPUT" | "STATE_CONFLICT" | "RUNTIME_ERROR", message: string) {
+function ruleError(code: "INVALID_INPUT" | "STATE_CONFLICT" | "RUNTIME_ERROR" | "IO_ERROR" | "NOT_FOUND", message: string) {
   return { code, stage: "fixture_user_rules", message, retryable: code !== "INVALID_INPUT" };
 }
 
@@ -391,14 +397,12 @@ function settings(): AppSettings {
     schemaVersion: 1,
     locale: "zh-CN",
     theme: persisted.theme,
-    launchAtLogin: false,
-    showGlobalTraffic: true,
     networkMode: "manual",
     mixedPort: 17890,
     controllerPort: 19090,
     updateChannel: "stable",
     ...updatePreferences,
-    diagnosticsRetentionDays: 7,
+    ...appearanceSettings,
   };
 }
 
@@ -456,6 +460,20 @@ function payloadRecord(payload: InvokeArgs | undefined): Record<string, unknown>
 
 mockIPC(async (command, payload) => {
   const args = payloadRecord(payload);
+  // UI-only settings save is synthetic. Port/mode changes remain fail-closed.
+  if (command === "update_settings") {
+    const value = args.settings as AppSettings;
+    const current = settings();
+    if (!value || value.networkMode !== current.networkMode || value.mixedPort !== current.mixedPort || value.controllerPort !== current.controllerPort) {
+      networkMutationCount++;
+      report("已拦截预览中的网络模式或端口修改");
+      throw new Error("FIXTURE_ONLY: 网络模式与端口不可在预览中修改");
+    }
+    appearanceSettings = { launchAtLogin: value.launchAtLogin, showGlobalTraffic: value.showGlobalTraffic, diagnosticsRetentionDays: value.diagnosticsRetentionDays };
+    document.documentElement.dataset.fixtureSettingsSaves = String(++settingsSaveCount);
+    report("运行偏好已保存到合成状态；未触及系统设置");
+    return settings();
+  }
   if (command === "save_update_preferences") {
     const source = args.source as UpdateSource;
     if (source !== updatePreferences.updateSource) fixtureUpdate = { phase: "idle", info: null, downloadedBytes: 0, totalBytes: 0, error: null };

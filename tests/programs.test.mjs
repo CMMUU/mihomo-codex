@@ -41,13 +41,17 @@ test("program UI uses scoped API and explicit confirmation, not global proxy mut
   assert.doesNotMatch(source, /setNetworkMode|startActive|updateSettings|\.kill\(|setx|localStorage/);
 });
 
-test("program page is wired into navigation and every active-nav styling family", () => {
+test("program page shares the single accessible navigation styling contract", () => {
   const main = readFileSync(new URL("../src/main.ts", import.meta.url), "utf8");
-  const css = readFileSync(new URL("../src/styles.css", import.meta.url), "utf8");
+  const css = readFileSync(new URL("../src/desktop-theme.css", import.meta.url), "utf8");
+  const ui = readFileSync(new URL("../src/ui.ts", import.meta.url), "utf8");
   assert.match(main, /id="programs-view"/);
   assert.match(main, /if \(view === "programs"\) void programManager\.refresh\(\)/);
-  assert.match(css, /:root\[data-view="programs"\]/);
-  assert.match(css, /body:has\(#programs-view:not\(\.is-hidden\)\)/);
+  assert.match(ui, /id: "programs", label: "程序代理"/);
+  assert.match(css, /\.sidebar \.nav-item\[aria-current="page"\]/);
+  assert.match(main, /button\.setAttribute\("aria-current", "page"\)/);
+  assert.match(main, /button\.removeAttribute\("aria-current"\)/);
+  assert.doesNotMatch(css, /body:has\(#programs-view/);
 });
 
 test("compatibility diagnostics never enable system routing for unrelated clients", () => {
