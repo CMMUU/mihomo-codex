@@ -20,6 +20,14 @@ on:
         required: false
         type: boolean
         default: true
+      runner:
+        description: GitHub-hosted runner; use the other architecture to diagnose a stalled network route
+        required: true
+        type: choice
+        default: ubuntu-24.04-arm
+        options:
+          - ubuntu-24.04-arm
+          - ubuntu-24.04
   schedule:
     - cron: '17 2 * * *'
 
@@ -38,7 +46,9 @@ jobs:
       (github.event.workflow_run.conclusion == 'success' &&
       github.event.workflow_run.head_repository.full_name == github.repository &&
       (github.event.workflow_run.event == 'push' || github.event.workflow_run.event == 'workflow_dispatch')))
-    runs-on: ubuntu-24.04
+    # Both are trusted GitHub-hosted images already exercised by RouteDeck CI.
+    # Never accept an arbitrary/self-hosted runner label from event input.
+    runs-on: ${{ inputs.runner == 'ubuntu-24.04' && 'ubuntu-24.04' || 'ubuntu-24.04-arm' }}
     timeout-minutes: 90
     steps:
       - name: Check out trusted default-branch synchronizer
@@ -47,7 +57,7 @@ jobs:
           ref: main
           persist-credentials: false
       - name: Run offline synchronizer checks
-        run: python3 -m unittest discover -s scripts -p 'test_*gitee*.py'
+        run: python3 -m unittest discover -s scripts -p 'test_*gitee*.py' -b
       - name: Synchronize to the checked Gitee repository
         env:
           GITHUB_TOKEN: ${{ github.token }}

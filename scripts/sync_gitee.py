@@ -478,6 +478,7 @@ class Sync:
         directory = self.work / "assets" / self.repo / str(release["id"])
         for asset in assets:
             file = directory / asset["name"]
+            print(f"Verifying GitHub source: {release['tag_name']}/{asset['name']} ({asset['size']} bytes)", flush=True)
             actual = self.gh.download(f"{self.source_path}/releases/assets/{asset['id']}",
                                       file, asset["size"], source_digest(asset))
             files.append({"name": asset["name"], "path": file, "size": asset["size"], "sha256": actual})
@@ -573,6 +574,7 @@ class Sync:
         for item in group["assets"]:
             asset = item["target"]
             original = files[asset["name"]]
+            print(f"Verifying retirement backup: {group['source']['tag_name']}/{asset['name']} ({asset['size']} bytes)", flush=True)
             check = self.work / "verify" / str(group["target"]["id"]) / (str(asset["id"]) + ".retire-" + uuid.uuid4().hex)
             try:
                 self.ge.download(f"{self.target_path}/releases/{group['target']['id']}/attach_files/{asset['id']}/download",
@@ -695,6 +697,7 @@ class Sync:
             self.guard()
             if Path(item["path"]).stat().st_size != item["size"] or sha256(item["path"]) != item["sha256"]:
                 raise SyncError("Local source attachment changed before upload")
+            print(f"Uploading Gitee attachment: {item['name']} ({item['size']} bytes)", flush=True)
             self.ge.upload(endpoint, item["path"])
             matches = [asset for asset in self.ge.pages(endpoint) if asset.get("name") == item["name"]]
             if len(matches) != 1:
@@ -705,11 +708,13 @@ class Sync:
         # Gitee AttachFile has no documented digest. Compare downloaded bytes,
         # including existing same-name attachments, instead of trusting the name.
         check = self.work / "verify" / str(release_id) / (str(asset["id"]) + ".verify-" + uuid.uuid4().hex)
+        print(f"Verifying Gitee attachment: {item['name']} ({item['size']} bytes)", flush=True)
         try:
             self.ge.download(f"{endpoint}/{asset['id']}/download", check, item["size"], item["sha256"])
         finally:
             if check.exists():
                 check.unlink()
+        print(f"Verified Gitee attachment: {item['name']}", flush=True)
 
     def sync_release(self, release, bare):
         if release.get("draft"):
