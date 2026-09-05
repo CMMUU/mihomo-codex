@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import argparse
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 import hashlib
 import http.client
+from itertools import islice
 import json
 import os
 from pathlib import Path
@@ -144,6 +146,11 @@ class Api:
         self.host = "api.github.com" if service == "github" else "gitee.com"
         self.storage_hosts = GH_STORAGE if service == "github" else GE_STORAGE | set(storage_hosts)
         self.opener = build_opener(NoRedirect())
+
+    def fork(self):
+        # Each transfer owns its HTTP handlers/connections. Credentials remain
+        # in memory and all redirect/host restrictions are preserved.
+        return Api(self.service, self.token, self.storage_hosts)
 
     def headers(self):
         headers = {"Authorization": "Bearer " + self.token, "User-Agent": "CMMUU-Gitee-Sync/1", "Accept": "application/json"}
@@ -390,7 +397,7 @@ def git_run(repo, *args):
 
 class Sync:
     def __init__(self, repo, github, gitee, work, max_asset_bytes=GE_MAX_ASSET,
-                 max_total_bytes=GE_MAX_TOTAL, other_attachment_bytes=0):
+                 max_total_bytes=GE_MAX_TOTAL, other_attachment_bytes=0, transfer_workers=1):
         self.repo, self.gh, self.ge, self.work = repo, github, gitee, Path(work)
         if repo not in REPOS:
             raise SyncError("Unsupported repository")
@@ -400,6 +407,9 @@ class Sync:
         self.max_asset_bytes, self.max_total_bytes = max_asset_bytes, max_total_bytes
         self.other_attachment_bytes = other_attachment_bytes
         self.release_assets = {}
+        if type(transfer_workers) is not int or not 1 <= transfer_workers <= 3:
+            raise SyncError("Transfer concurrency must be between 1 and 3")
+        self.transfer_workers = transfer_workers
 
     def guard(self):
         self.source = self.gh.request(self.source_path)
@@ -716,6 +726,38 @@ class Sync:
                 check.unlink()
         print(f"Verified Gitee attachment: {item['name']}", flush=True)
 
+    def transfer_attachments(self, release_id, files):
+        manifests = {"latest.json", "latest-gitee.json"}
+        regular = sorted((item for item in files if item["name"] not in manifests), key=lambda item: item["name"])
+        if self.transfer_workers == 1:
+            for item in regular:
+                self.ensure_attachment(release_id, item)
+        else:
+            def transfer(item):
+                worker = Sync(self.repo, self.gh.fork(), self.ge.fork(), self.work,
+                              self.max_asset_bytes, self.max_total_bytes, self.other_attachment_bytes)
+                worker.ensure_attachment(release_id, item)
+
+            # Bound both running and queued requests. On failure, stop assigning
+            # more files and let in-flight requests finish for safe reconciliation.
+            pending_files = iter(regular)
+            with ThreadPoolExecutor(max_workers=self.transfer_workers) as pool:
+                pending = {pool.submit(transfer, item) for item in islice(pending_files, self.transfer_workers)}
+                while pending:
+                    finished, pending = wait(pending, return_when=FIRST_COMPLETED)
+                    try:
+                        for future in finished:
+                            future.result()
+                    except BaseException:
+                        for future in pending:
+                            future.cancel()
+                        raise
+                    pending.update(pool.submit(transfer, item) for item in islice(pending_files, len(finished)))
+        # This barrier is intentionally outside the pool: every installer,
+        # signature and checksum must verify before either updater manifest.
+        for item in sorted((item for item in files if item["name"] in manifests), key=lambda item: item["name"]):
+            self.ensure_attachment(release_id, item)
+
     def sync_release(self, release, bare):
         if release.get("draft"):
             return  # Gitee release API has no documented equivalent of GitHub drafts.
@@ -743,8 +785,7 @@ class Sync:
             raise SyncError("Gitee release response does not match the source tag")
         # Gitee has no draft assets. Make updater manifests visible only after
         # every installer and signature has been uploaded and hash-verified.
-        for item in sorted(files, key=lambda item: (item["name"] in {"latest.json", "latest-gitee.json"}, item["name"])):
-            self.ensure_attachment(target["id"], item)
+        self.transfer_attachments(target["id"], files)
         confirmed = self.ge.request(f"{self.target_path}/releases/{target['id']}")
         if not release_metadata_matches(confirmed, metadata, ("tag_name", "name", "body", "prerelease")):
             raise SyncError("Gitee release metadata did not match after synchronization")
@@ -790,6 +831,8 @@ def main():
     parser.add_argument("--release-tag", help="Transfer one published stable release; still check total attachment capacity")
     parser.add_argument("--keep-latest-releases", type=int, choices=range(1, 11),
                         help="Opt in to retiring byte-verified Gitee history outside the latest N stable versions; never delete tags or GitHub assets")
+    parser.add_argument("--transfer-workers", type=int, choices=(1, 2, 3), default=1,
+                        help="Bound concurrent attachment transfers; updater manifests always wait for every file to verify")
     parser.add_argument("--work-dir", type=Path, required=True)
     parser.add_argument("--apply", action="store_true", help="Explicitly authorize writes to the checked Gitee repository")
     args = parser.parse_args()
@@ -803,7 +846,7 @@ def main():
     max_total = configured_bytes("GITEE_MAX_TOTAL_BYTES", GE_MAX_TOTAL, 100_000_000_000)
     reserved = configured_bytes("GITEE_OTHER_ATTACHMENT_BYTES", 0, max_total)
     Sync(args.repo, Api("github", gh_token), Api("gitee", ge_token, extra_hosts), args.work_dir,
-         max_asset, max_total, reserved).run(args.scope, args.apply, args.release_tag, args.keep_latest_releases)
+         max_asset, max_total, reserved, args.transfer_workers).run(args.scope, args.apply, args.release_tag, args.keep_latest_releases)
 
 
 if __name__ == "__main__":

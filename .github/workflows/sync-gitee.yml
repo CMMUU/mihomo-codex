@@ -49,7 +49,7 @@ jobs:
     # Both are trusted GitHub-hosted images already exercised by RouteDeck CI.
     # Never accept an arbitrary/self-hosted runner label from event input.
     runs-on: ${{ inputs.runner == 'ubuntu-24.04' && 'ubuntu-24.04' || 'ubuntu-24.04-arm' }}
-    timeout-minutes: 90
+    timeout-minutes: 180
     steps:
       - name: Check out trusted default-branch synchronizer
         uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
@@ -75,7 +75,7 @@ jobs:
         run: |
           # Explicitly approved retention: keep the newest stable release on
           # Gitee; GitHub history, release metadata and all Git tags stay intact.
-          args=(--repo routedeck --work-dir "$RUNNER_TEMP/gitee-sync" --keep-latest-releases 1)
+          args=(--repo routedeck --work-dir "$RUNNER_TEMP/gitee-sync" --keep-latest-releases 1 --transfer-workers 3)
           if [ "$SYNC_DRY_RUN" != "true" ]; then
             args+=(--apply)
           fi
