@@ -319,6 +319,20 @@ def git_credential():
         sys.stdout.write(f"username={username}\npassword={token}\n\n")
 
 
+def git_failure_kind(stderr):
+    # Classify locally; never log Git stderr, which may contain credentials.
+    message = stderr.lower()
+    if any(value in message for value in ("authentication failed", "could not read username", "error: 401", "error: 403")):
+        return "authorization"
+    if "atomic" in message and "support" in message:
+        return "unsupported atomic push"
+    if any(value in message for value in ("non-fast-forward", "fetch first", "already exists")):
+        return "conflicting refs or existing destination"
+    if any(value in message for value in ("connection reset", "connection timed out", "timed out", "tls", "ssl", "http/2", "could not resolve", "failed to connect", "remote end hung up", "error: 500", "error: 502", "error: 503", "error: 504")):
+        return "transient network"
+    return "unclassified transport failure"
+
+
 def git_run(repo, *args):
     env = os.environ.copy()
     env.update({"SYNC_REPO": repo, "GIT_TERMINAL_PROMPT": "0", "GCM_INTERACTIVE": "Never",
@@ -326,15 +340,25 @@ def git_run(repo, *args):
                 "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_SYSTEM": os.devnull,
                 "GIT_ALLOW_PROTOCOL": "https"})
     helper = "!" + shlex.quote(Path(sys.executable).as_posix()) + " " + shlex.quote(Path(__file__).resolve().as_posix()) + " _git_credential"
-    command = ["git", "-c", "credential.helper=", "-c", "credential.helper=" + helper,
+    command = ["git", "-c", "http.version=HTTP/1.1", "-c", "credential.helper=", "-c", "credential.helper=" + helper,
                "-c", "credential.useHttpPath=true", "-c", "core.askPass=", *args]
-    try:
-        result = subprocess.run(command, env=env, capture_output=True, text=True, timeout=300)
-    except (OSError, subprocess.TimeoutExpired):
-        raise SyncError("Git operation failed or timed out; no credential output is logged") from None
-    if result.returncode:
-        raise SyncError("Git operation failed (network, authorization, conflicting refs or unsupported atomic push); remote refs were not forced")
-    return result.stdout.strip()
+    operation_args = args[2:] if args[:1] == ("--git-dir",) else args
+    operation = operation_args[0] if operation_args else "unknown"
+    if operation not in {"clone", "fetch", "push", "ls-remote", "rev-parse", "remote", "for-each-ref"}:
+        operation = "other"
+    attempts = READ_ATTEMPTS if operation in {"fetch", "ls-remote"} else 1
+    for attempt in range(attempts):
+        try:
+            result = subprocess.run(command, env=env, capture_output=True, text=True, timeout=300)
+        except (OSError, subprocess.TimeoutExpired):
+            kind = "transient network"
+        else:
+            if not result.returncode:
+                return result.stdout.strip()
+            kind = git_failure_kind(result.stderr or "")
+        if kind != "transient network" or attempt == attempts - 1:
+            raise SyncError(f"Git {operation} failed ({kind}); no credential output is logged and remote refs were not forced") from None
+        time.sleep(2 ** attempt)
 
 
 class Sync:
@@ -376,12 +400,20 @@ class Sync:
         self.guard()  # Recheck privacy immediately before the first external write.
         destination = f"https://gitee.com/{GE_OWNER}/{self.repo}.git"
         # Explicit namespaces: no deletion, force push, pull refs or remote configs.
-        git_run(self.repo, "--git-dir", str(bare), "push", "--atomic", destination,
-                "refs/heads/*:refs/heads/*", "refs/tags/*:refs/tags/*")
+        push_error = None
+        try:
+            git_run(self.repo, "--git-dir", str(bare), "push", "--atomic", destination,
+                    "refs/heads/*:refs/heads/*", "refs/tags/*:refs/tags/*")
+        except SyncError as error:
+            # A lost response can follow a successful push. Do not retry the
+            # write: independently read every expected ref before accepting it.
+            push_error = error
         expected = dict(line.split(" ", 1) for line in git_run(self.repo, "--git-dir", str(bare), "for-each-ref",
                         "--format=%(refname) %(objectname)", "refs/heads", "refs/tags").splitlines())
         actual = {ref: sha for sha, ref in (line.split() for line in git_run(self.repo, "ls-remote", "--refs", destination).splitlines())}
         if any(actual.get(ref) != sha for ref, sha in expected.items()):
+            if push_error is not None:
+                raise push_error
             raise SyncError("Gitee branches or tags did not match the source after push")
         return bare
 

@@ -5,6 +5,7 @@ import json
 from io import BytesIO, StringIO
 from pathlib import Path
 import tempfile
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 from urllib.error import HTTPError
@@ -69,6 +70,39 @@ class SyncTests(unittest.TestCase):
         for repo in ("mihomo-codex", "RouteDeck", "other", "../routedeck"):
             with self.subTest(repo=repo), self.assertRaisesRegex(sync.SyncError, "Unsupported repository"):
                 sync.Sync(repo, None, None, self.fixture())
+
+    def test_git_read_retries_transient_transport_without_logging_credentials(self):
+        failed = SimpleNamespace(returncode=128, stdout="", stderr="TLS connection reset secret-token")
+        success = SimpleNamespace(returncode=0, stdout="verified refs\n", stderr="")
+        with patch.object(sync.subprocess, "run", side_effect=[failed, success]) as run, patch.object(sync.time, "sleep"):
+            self.assertEqual(sync.git_run("routedeck", "ls-remote", "https://gitee.com/cmmuu/routedeck.git"), "verified refs")
+            self.assertEqual(run.call_count, 2)
+            self.assertIn("http.version=HTTP/1.1", run.call_args.args[0])
+
+    def test_git_push_and_auth_failures_are_not_retried_or_exposed(self):
+        for operation, stderr, expected in (("push", "TLS connection reset secret-token", "transient network"),
+                                             ("ls-remote", "Authentication failed secret-token", "authorization")):
+            with self.subTest(operation=operation), patch.object(sync.subprocess, "run", return_value=SimpleNamespace(returncode=128, stdout="", stderr=stderr)) as run, patch.object(sync.time, "sleep") as sleep:
+                with self.assertRaises(sync.SyncError) as raised:
+                    sync.git_run("routedeck", "--git-dir", "mirror.git", operation)
+                self.assertIn(f"Git {operation} failed ({expected})", str(raised.exception))
+                self.assertNotIn("secret-token", str(raised.exception))
+                self.assertEqual(run.call_count, 1)
+                sleep.assert_not_called()
+
+    def test_uncertain_push_is_accepted_only_after_all_refs_match(self):
+        for matches in (True, False):
+            with self.subTest(matches=matches):
+                job = sync.Sync("routedeck", None, None, self.fixture())
+                refs = "refs/heads/main " + "a" * 40 + "\nrefs/tags/v0.7.0 " + "b" * 40
+                actual = "a" * 40 + "\trefs/heads/main\n" + ("b" if matches else "c") * 40 + "\trefs/tags/v0.7.0"
+                with patch.object(job, "guard"), patch.object(sync, "git_run", side_effect=["", sync.SyncError("Git push failed (transient network)"), refs, actual]) as run:
+                    if matches:
+                        self.assertEqual(job.sync_refs(), job.work / "routedeck.git")
+                    else:
+                        with self.assertRaisesRegex(sync.SyncError, "Git push failed"):
+                            job.sync_refs()
+                    self.assertEqual(sum("push" in call.args for call in run.call_args_list), 1)
 
     def test_git_credentials_only_allow_the_renamed_repository_paths(self):
         environment = {"SYNC_REPO": "routedeck", "GITHUB_TOKEN": "offline-gh", "GITEE_TOKEN": "offline-ge"}
