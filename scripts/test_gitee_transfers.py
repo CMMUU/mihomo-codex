@@ -62,14 +62,30 @@ class TransferTests(unittest.TestCase):
 
     def test_failure_stops_new_assignments_and_never_publishes_manifests(self):
         job, calls = self.job(), []
+        first_wave = threading.Barrier(3, timeout=10)
+        failed_future_done = threading.Event()
+
+        class ControlledExecutor(sync.ThreadPoolExecutor):
+            def submit(self, function, item):
+                future = super().submit(function, item)
+                if item["name"] == "a.zip":
+                    future.add_done_callback(lambda completed: failed_future_done.set())
+                return future
 
         def ensure(worker, release_id, item):
             calls.append(item["name"])
+            # Client setup and OS scheduling need not finish in filename order.
+            # Hold the two successful initial transfers until the failed future
+            # is actually complete; only then is new assignment a violation.
+            if item["name"] in {"a.zip", "b.zip", "c.zip"}:
+                first_wave.wait()
             if item["name"] == "a.zip":
                 raise sync.SyncError("Uncertain upload; do not retry")
+            self.assertTrue(failed_future_done.wait(10))
 
         names = ["a.zip", "b.zip", "c.zip", "d.zip", "e.zip", "latest.json", "latest-gitee.json"]
-        with patch.object(sync.Sync, "ensure_attachment", autospec=True, side_effect=ensure):
+        with patch.object(sync, "ThreadPoolExecutor", ControlledExecutor), \
+                patch.object(sync.Sync, "ensure_attachment", autospec=True, side_effect=ensure):
             with self.assertRaisesRegex(sync.SyncError, "Uncertain upload"):
                 job.transfer_attachments(12, [{"name": name} for name in names])
         self.assertTrue(set(calls).issubset({"a.zip", "b.zip", "c.zip"}))
